@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Connecting to Payment Gateway - {{ $invoice->invoice_number }}</title>
+    @vite(['resources/css/app.css', 'resources/js/app.js'])
+</head>
+<body class="min-h-screen bg-slate-50 flex items-center justify-center p-4 text-slate-800">
+    <div class="w-full max-w-md bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sm:p-8 text-center">
+        <div class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-amber-100 text-amber-600">
+            <svg class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86l-7.1 12.27A2 2 0 004.92 19h14.16a2 2 0 001.73-2.87l-7.1-12.27a2 2 0 00-3.42 0z" />
+            </svg>
+        </div>
+
+        <h1 class="text-xl font-bold text-slate-900">Connecting to Payment Gateway</h1>
+        <p class="mt-2 text-sm text-slate-600">
+            The connection to the QRIS payment gateway is temporarily unavailable for invoice
+            <span class="font-mono font-semibold">{{ $invoice->invoice_number }}</span>.
+        </p>
+
+        <div class="mt-6 space-y-3">
+            <a href="{{ route('public.pay', $invoice->public_token) }}"
+               class="inline-flex w-full min-h-12 items-center justify-center rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-700 transition">
+                Retry Connection
+            </a>
+            <a href="{{ route('login') }}"
+               class="inline-flex w-full min-h-12 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition">
+                Sign In to Customer Portal
+            </a>
+        </div>
+    </div>
+</body>
+</html>
