@@ -12,16 +12,16 @@ class HealthController extends Controller
 {
     public function health(SystemHealthService $healthService): JsonResponse
     {
-        $checks = $healthService->checkConnectivity(includeExternal: false);
-        $healthy = ($checks['database']['ok'] ?? false) && ($checks['cache']['ok'] ?? false);
+        $checks = $healthService->checkMinimalReadiness();
+        $healthy = $checks['database'] && $checks['cache'];
 
         return response()->json([
             'status' => $healthy ? 'ok' : 'degraded',
             'app' => config('app.name'),
             'timestamp' => now('Asia/Jakarta')->toIso8601String(),
             'checks' => [
-                'database' => ($checks['database']['ok'] ?? false) ? 'up' : 'down',
-                'cache' => ($checks['cache']['ok'] ?? false) ? 'up' : 'down',
+                'database' => $checks['database'] ? 'up' : 'down',
+                'cache' => $checks['cache'] ? 'up' : 'down',
             ],
         ], $healthy ? 200 : 503);
     }

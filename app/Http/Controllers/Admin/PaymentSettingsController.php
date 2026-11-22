@@ -41,10 +41,24 @@ class PaymentSettingsController extends Controller
             'default_due_days' => ['required', 'integer', 'min:1', 'max:30'],
             'grace_period_days' => ['required', 'integer', 'min:0', 'max:30'],
             'sumopod_api_key' => ['nullable', 'string'],
-            'sumopod_signing_secret' => ['nullable', 'string'],
+            'sumopod_signing_secret' => [
+                'nullable',
+                'string',
+                function (string $attribute, mixed $value, \Closure $fail): void {
+                    if (!is_string($value) || trim($value) === '') {
+                        return;
+                    }
+                    $raw = trim($value);
+                    $clean = str_starts_with($raw, 'whsec_') ? substr($raw, 6) : $raw;
+                    $decoded = base64_decode($clean, true);
+                    if ($decoded === false || strlen($decoded) < 16) {
+                        $fail('The Svix signing secret must be valid base64 encoding at least 16 bytes.');
+                    }
+                },
+            ],
             'sumopod_webhook_token' => ['nullable', 'string'],
             'telegram_chat_id' => ['nullable', 'string', 'max:60'],
-            'telegram_bot_token' => ['nullable', 'string'],
+            'telegram_bot_token' => ['nullable', 'string', 'max:120', 'regex:/^[0-9]+:[A-Za-z0-9_-]{20,}$/'],
             'google_maps_api_key' => ['nullable', 'string'],
         ]);
 
@@ -66,19 +80,21 @@ class PaymentSettingsController extends Controller
         ];
 
         if (!empty($validated['sumopod_api_key'])) {
-            $updates['sumopod_api_key_encrypted'] = $validated['sumopod_api_key'];
+            $updates['sumopod_api_key_encrypted'] = trim($validated['sumopod_api_key']);
         }
         if (!empty($validated['sumopod_signing_secret'])) {
-            $updates['sumopod_signing_secret_encrypted'] = $validated['sumopod_signing_secret'];
+            $updates['sumopod_signing_secret_encrypted'] = trim($validated['sumopod_signing_secret']);
         }
-        if (!empty($validated['sumopod_webhook_token'])) {
-            $updates['sumopod_webhook_token_encrypted'] = $validated['sumopod_webhook_token'];
+        if ($request->boolean('clear_sumopod_webhook_token')) {
+            $updates['sumopod_webhook_token_encrypted'] = null;
+        } elseif (!empty($validated['sumopod_webhook_token'])) {
+            $updates['sumopod_webhook_token_encrypted'] = trim($validated['sumopod_webhook_token']);
         }
         if (!empty($validated['telegram_bot_token'])) {
-            $updates['telegram_bot_token_encrypted'] = $validated['telegram_bot_token'];
+            $updates['telegram_bot_token_encrypted'] = trim($validated['telegram_bot_token']);
         }
         if (!empty($validated['google_maps_api_key'])) {
-            $updates['google_maps_api_key_encrypted'] = $validated['google_maps_api_key'];
+            $updates['google_maps_api_key_encrypted'] = trim($validated['google_maps_api_key']);
         }
 
         $settings->update($updates);

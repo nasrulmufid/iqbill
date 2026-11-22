@@ -168,7 +168,10 @@ class WhatsappBroadcastService
             throw new InvalidArgumentException('No valid recipients with a WhatsApp number found.');
         }
 
-        $dispatchMode = ($payload['dispatch_mode'] ?? 'sync') === 'queue' ? 'queue' : 'sync';
+        $dispatchMode = ($payload['dispatch_mode'] ?? 'queue') === 'sync' ? 'sync' : 'queue';
+        if ($dispatchMode === 'sync' && $customers->count() > 25) {
+            $dispatchMode = 'queue';
+        }
         $delaySeconds = max(0, min(30, (int) ($payload['delay_seconds'] ?? 2)));
         $templateKey = !empty($payload['template_key']) ? (string) $payload['template_key'] : null;
         $title = trim((string) ($payload['title'] ?? ''));
@@ -278,6 +281,8 @@ class WhatsappBroadcastService
                 return [collect(), $locked->dispatch_mode, $locked->delay_seconds];
             }
 
+            $effectiveMode = ($locked->dispatch_mode === 'sync' && $failedLogs->count() <= 25) ? 'sync' : 'queue';
+
             WhatsappNotificationLog::query()
                 ->whereIn('id', $failedLogs->pluck('id'))
                 ->update([
@@ -287,7 +292,8 @@ class WhatsappBroadcastService
 
             $locked->forceFill([
                 'failed_count' => max(0, $locked->failed_count - $failedLogs->count()),
-                'status' => $locked->dispatch_mode === 'sync' ? 'processing' : 'queued',
+                'dispatch_mode' => $effectiveMode,
+                'status' => $effectiveMode === 'sync' ? 'processing' : 'queued',
                 'completed_at' => null,
             ])->save();
 
@@ -296,7 +302,7 @@ class WhatsappBroadcastService
                 ->orderBy('id')
                 ->get();
 
-            return [$requeuedLogs, $locked->dispatch_mode, $locked->delay_seconds];
+            return [$requeuedLogs, $effectiveMode, $locked->delay_seconds];
         });
 
         if ($logs->isEmpty()) {

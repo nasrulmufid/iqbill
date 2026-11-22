@@ -27,6 +27,7 @@ class SendBulkWhatsAppMessageJob implements ShouldQueue
         public readonly int $logId,
         public readonly int $broadcastId
     ) {
+        $this->onQueue('broadcasts');
     }
 
     public function handle(WhatsAppService $whatsApp, WhatsappBroadcastService $broadcastService): void

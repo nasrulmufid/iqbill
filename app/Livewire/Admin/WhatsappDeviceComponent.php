@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace App\Livewire\Admin;
 
+use App\Enums\UserRole;
 use App\Models\CompanySetting;
 use App\Services\Notification\GowaClient;
 use Illuminate\View\View;
@@ -39,6 +40,15 @@ class WhatsappDeviceComponent extends Component
 
     public ?string $errorMessage = null;
 
+    public function boot(): void
+    {
+        $user = auth()->user();
+        abort_unless(
+            $user !== null && $user->is_active && $user->hasRole(UserRole::SuperAdmin),
+            403
+        );
+    }
+
     public function mount(): void
     {
         $settings = CompanySetting::current();
@@ -56,20 +66,29 @@ class WhatsappDeviceComponent extends Component
         $this->reset(['errorMessage', 'statusMessage']);
 
         $this->validate([
-            'waGatewayUrl' => ['nullable', 'url', 'max:255'],
+            'waGatewayUrl' => ['nullable', 'url', 'max:255', 'regex:/^https?:\/\//i'],
             'waDeviceId' => ['nullable', 'string', 'max:100'],
             'waBasicAuthUser' => ['nullable', 'string', 'max:100'],
             'waBasicAuthPassword' => ['nullable', 'string', 'max:255'],
         ], [
             'waGatewayUrl.url' => 'Go-WhatsApp Base URL must be a valid URL (e.g. http://gowa:3000 or http://127.0.0.1:3000).',
+            'waGatewayUrl.regex' => 'Go-WhatsApp Base URL must use http:// or https://.',
         ]);
 
         $settings = CompanySetting::current();
+        $newUrl = trim($this->waGatewayUrl) !== '' ? rtrim(trim($this->waGatewayUrl), '/') : null;
+        $originChanged = $this->extractOrigin($settings->wa_gateway_url) !== $this->extractOrigin($newUrl);
+
         $updates = [
-            'wa_gateway_url' => trim($this->waGatewayUrl) !== '' ? rtrim(trim($this->waGatewayUrl), '/') : null,
+            'wa_gateway_url' => $newUrl,
             'wa_device_id' => trim($this->waDeviceId) !== '' ? trim($this->waDeviceId) : null,
             'wa_basic_auth_user' => trim($this->waBasicAuthUser) !== '' ? trim($this->waBasicAuthUser) : null,
         ];
+
+        if ($originChanged) {
+            $updates['wa_api_token_encrypted'] = null;
+            $updates['wa_basic_auth_password_encrypted'] = null;
+        }
 
         if (trim($this->waBasicAuthPassword) !== '') {
             $updates['wa_basic_auth_password_encrypted'] = trim($this->waBasicAuthPassword);
@@ -89,6 +108,24 @@ class WhatsappDeviceComponent extends Component
             $this->devices = [];
             $this->statusMessage = 'Go-WhatsApp configuration saved successfully.';
         }
+    }
+
+    private function extractOrigin(?string $url): ?string
+    {
+        if (empty($url)) {
+            return null;
+        }
+
+        $parsed = parse_url($url);
+        if (!is_array($parsed) || empty($parsed['scheme']) || empty($parsed['host'])) {
+            return null;
+        }
+
+        $scheme = strtolower((string) $parsed['scheme']);
+        $host = strtolower((string) $parsed['host']);
+        $port = (int) ($parsed['port'] ?? ($scheme === 'https' ? 443 : 80));
+
+        return "{$scheme}://{$host}:{$port}";
     }
 
     public function refreshDevices(): void

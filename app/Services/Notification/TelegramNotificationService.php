@@ -42,12 +42,21 @@ class TelegramNotificationService
             ]);
 
             if (!$response->successful()) {
-                return ['ok' => false, 'message' => 'HTTP ' . $response->status() . ': ' . $response->body()];
+                \Illuminate\Support\Facades\Log::warning('Telegram sendMessage failed', [
+                    'status' => $response->status(),
+                    'body' => mb_substr($response->body(), 0, 500),
+                ]);
+
+                return ['ok' => false, 'message' => 'Telegram API returned HTTP ' . $response->status() . '.'];
             }
 
             return ['ok' => true, 'message' => 'Telegram message sent.'];
         } catch (Throwable $e) {
-            return ['ok' => false, 'message' => $e->getMessage()];
+            \Illuminate\Support\Facades\Log::warning('Telegram sendMessage exception', [
+                'error' => $this->redactBotToken($e->getMessage()),
+            ]);
+
+            return ['ok' => false, 'message' => 'Failed to reach Telegram API.'];
         }
     }
 
@@ -66,26 +75,42 @@ class TelegramNotificationService
                 ->get("https://api.telegram.org/bot{$settings->telegram_bot_token_encrypted}/getMe");
 
             if (!$me->successful()) {
-                return ['ok' => false, 'bot_username' => null, 'message' => 'Invalid bot token: ' . $me->body()];
+                \Illuminate\Support\Facades\Log::warning('Telegram getMe failed', [
+                    'status' => $me->status(),
+                    'body' => mb_substr($me->body(), 0, 500),
+                ]);
+
+                return ['ok' => false, 'bot_username' => null, 'message' => 'Invalid bot token or Telegram API rejected request (HTTP ' . $me->status() . ').'];
             }
 
             $username = $me->json('result.username');
             $sendUrl = "https://api.telegram.org/bot{$settings->telegram_bot_token_encrypted}/sendMessage";
             $send = Http::timeout(8)->asJson()->post($sendUrl, [
                 'chat_id' => $settings->telegram_chat_id,
-                'text' => "<b>[{$settings->company_name}]</b> Telegram Bot connection test succeeded.",
+                'text' => '<b>[' . e((string) $settings->company_name) . ']</b> Telegram Bot connection test succeeded.',
                 'parse_mode' => 'HTML',
             ]);
 
+            if (!$send->successful()) {
+                \Illuminate\Support\Facades\Log::warning('Telegram testConnection sendMessage failed', [
+                    'status' => $send->status(),
+                    'body' => mb_substr($send->body(), 0, 500),
+                ]);
+            }
+
             return [
                 'ok' => $send->successful(),
-                'bot_username' => $username,
+                'bot_username' => is_string($username) ? $username : null,
                 'message' => $send->successful()
                     ? "Connected to @{$username} and test message delivered."
-                    : 'Failed to send message to chat_id: ' . $send->body(),
+                    : 'Failed to send test message to configured chat_id (HTTP ' . $send->status() . ').',
             ];
         } catch (Throwable $e) {
-            return ['ok' => false, 'bot_username' => null, 'message' => $e->getMessage()];
+            \Illuminate\Support\Facades\Log::warning('Telegram testConnection exception', [
+                'error' => $this->redactBotToken($e->getMessage()),
+            ]);
+
+            return ['ok' => false, 'bot_username' => null, 'message' => 'Failed to reach Telegram API.'];
         }
     }
 
@@ -122,19 +147,25 @@ class TelegramNotificationService
             return;
         }
 
-        $dedupKey = 'tg_err:' . md5($context . '|' . $errorMessage);
+        $normalizedForDedup = (string) preg_replace('/\b[0-9]{8,16}\b/', '<phone>', $errorMessage);
+        $dedupKey = 'tg_err:' . md5($context . '|' . $normalizedForDedup);
         if (!Cache::add($dedupKey, 1, 300)) {
             return;
         }
 
-        $truncated = mb_substr($errorMessage, 0, 800);
+        $truncated = mb_substr($this->redactBotToken($errorMessage), 0, 800);
         $text = implode("\n", [
-            "<b>[ERROR ALERT] {$settings->company_name}</b>",
+            '<b>[ERROR ALERT] ' . e((string) $settings->company_name) . '</b>',
             'Source: <code>' . e($context) . '</code>',
             'Message: <pre>' . e($truncated) . '</pre>',
             'Time: ' . now('Asia/Jakarta')->format('d M Y H:i:s') . ' WIB',
         ]);
 
         $this->sendMessage($text);
+    }
+
+    private function redactBotToken(string $message): string
+    {
+        return (string) preg_replace('#/bot[^/\s]+#i', '/bot[REDACTED]', $message);
     }
 }

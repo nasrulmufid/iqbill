@@ -10,6 +10,9 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
+use Illuminate\Support\Str;
 
 class User extends Authenticatable
 {
@@ -55,5 +58,24 @@ class User extends Authenticatable
     public function hasRole(UserRole ...$roles): bool
     {
         return in_array($this->role, $roles, true);
+    }
+
+    public function revokeAllSessions(?string $exceptSessionId = null): void
+    {
+        $this->forceFill(['remember_token' => Str::random(60)])->saveQuietly();
+
+        try {
+            if (Schema::hasTable('sessions')) {
+                $query = DB::table('sessions')->where('user_id', $this->id);
+
+                if ($exceptSessionId !== null && $exceptSessionId !== '') {
+                    $query->where('id', '!=', $exceptSessionId);
+                }
+
+                $query->delete();
+            }
+        } catch (\Throwable) {
+            // Non-database session stores rely on AuthenticateSession + remember_token rotation
+        }
     }
 }

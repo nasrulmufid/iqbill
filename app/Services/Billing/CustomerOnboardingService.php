@@ -13,6 +13,7 @@ use App\Models\User;
 use App\Services\Mikrotik\MikrotikProvisioningService;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Str;
 
 class CustomerOnboardingService
 {
@@ -70,7 +71,7 @@ class CustomerOnboardingService
 
         $portalPassword = (string) ($data['portal_password'] ?? '');
         if ($portalPassword === '') {
-            $portalPassword = '12345678';
+            $portalPassword = Str::password(12, letters: true, numbers: true, symbols: false);
         }
 
         $normalizedWhatsapp = Customer::normalizeWhatsappPhone((string) ($data['phone_whatsapp'] ?? ''));

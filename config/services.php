@@ -40,4 +40,10 @@ return [
         'force_sync' => (bool) env('GOWA_FORCE_SYNC', false),
     ],
 
+    'mikrotik' => [
+        'verify_tls' => (bool) env('MIKROTIK_VERIFY_TLS', true),
+        'ca_bundle' => env('MIKROTIK_CA_BUNDLE'),
+        'allow_ssh_fallback' => (bool) env('MIKROTIK_ALLOW_SSH_FALLBACK', false),
+    ],
+
 ];

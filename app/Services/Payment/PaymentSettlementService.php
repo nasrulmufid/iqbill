@@ -14,6 +14,7 @@ use App\Models\Payment;
 use App\Models\PaymentWebhookLog;
 use App\Services\Mikrotik\MikrotikProvisioningService;
 use Carbon\Carbon;
+use Illuminate\Database\QueryException;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 
@@ -26,12 +27,22 @@ class PaymentSettlementService
     public function handle(Request $request, array $payload, string $verificationMethod): array
     {
         $svixId = $request->header('svix-id');
-        $eventType = (string) ($payload['event_type'] ?? '');
+        $eventType = is_scalar($payload['event_type'] ?? null) ? trim((string) $payload['event_type']) : '';
         $data = is_array($payload['data'] ?? null) ? $payload['data'] : [];
-        $externalRef = isset($data['payment_id']) ? (string) $data['payment_id'] : null;
-        $orderId = isset($data['order_id']) ? (string) $data['order_id'] : null;
+        $externalRef = is_scalar($data['payment_id'] ?? null) && trim((string) $data['payment_id']) !== ''
+            ? trim((string) $data['payment_id'])
+            : null;
+        $orderId = is_scalar($data['order_id'] ?? null) && trim((string) $data['order_id']) !== ''
+            ? trim((string) $data['order_id'])
+            : null;
 
-        if (!empty($svixId) && PaymentWebhookLog::query()->where('svix_id', $svixId)->exists()) {
+        if (
+            !empty($svixId)
+            && PaymentWebhookLog::query()
+                ->where('svix_id', $svixId)
+                ->whereIn('processing_status', ['processed', 'late_settled', 'duplicate_ignored'])
+                ->exists()
+        ) {
             return [
                 'http_status' => 200,
                 'body' => ['received' => true, 'status' => 'duplicate_ignored'],
@@ -41,7 +52,7 @@ class PaymentSettlementService
         if ($eventType === '' || ($externalRef === null && $orderId === null)) {
             $this->recordLog(
                 $request,
-                $svixId,
+                null,
                 $externalRef,
                 $orderId,
                 $eventType ?: 'unknown',
@@ -115,12 +126,18 @@ class PaymentSettlementService
         string $verificationMethod
     ): array {
         $result = DB::transaction(function () use ($data, $externalRef, $orderId): array {
-            $payment = Payment::query()
-                ->when($externalRef !== null, fn ($q) => $q->where('external_reference', $externalRef))
-                ->when($externalRef === null && $orderId !== null, fn ($q) => $q->where('payment_code', $orderId))
-                ->when($externalRef !== null && $orderId !== null, fn ($q) => $q->orWhere('payment_code', $orderId))
-                ->lockForUpdate()
-                ->first();
+            $paymentQuery = Payment::query()->where('gateway', 'sumopod_qris');
+
+            if ($externalRef !== null && $orderId !== null) {
+                $paymentQuery->where('external_reference', $externalRef)
+                    ->where('payment_code', $orderId);
+            } elseif ($externalRef !== null) {
+                $paymentQuery->where('external_reference', $externalRef);
+            } else {
+                $paymentQuery->where('payment_code', $orderId);
+            }
+
+            $payment = $paymentQuery->lockForUpdate()->first();
 
             if ($payment === null) {
                 return ['outcome' => 'not_found'];
@@ -137,7 +154,24 @@ class PaymentSettlementService
                 return ['outcome' => 'duplicate'];
             }
 
-            $incomingAmount = (int) ($data['amount'] ?? -1);
+            if (
+                $invoice->status === InvoiceStatus::Cancelled
+                || in_array($payment->status, [PaymentStatus::Cancelled, PaymentStatus::Failed], true)
+            ) {
+                return [
+                    'outcome' => 'invalid_state',
+                    'error' => "Cannot settle invoice in status '{$invoice->status->value}' or payment in status '{$payment->status->value}'.",
+                ];
+            }
+
+            if (isset($data['currency']) && is_scalar($data['currency']) && strtoupper(trim((string) $data['currency'])) !== 'IDR') {
+                return [
+                    'outcome' => 'currency_mismatch',
+                    'error' => 'Unsupported payment currency.',
+                ];
+            }
+
+            $incomingAmount = is_numeric($data['amount'] ?? null) ? (int) round((float) $data['amount']) : -1;
             $expectedAmount = (int) round((float) $payment->amount);
 
             if ($incomingAmount !== $expectedAmount) {
@@ -148,17 +182,13 @@ class PaymentSettlementService
             }
 
             $wasExpired = $payment->status === PaymentStatus::Expired;
-            $fee = isset($data['fee']) ? (float) $data['fee'] : (float) $payment->gateway_fee;
-            $netAmount = isset($data['net_amount'])
+            $fee = isset($data['fee']) && is_numeric($data['fee']) ? (float) $data['fee'] : (float) $payment->gateway_fee;
+            $netAmount = isset($data['net_amount']) && is_numeric($data['net_amount'])
                 ? (float) $data['net_amount']
                 : max(0.0, (float) $payment->amount - $fee);
 
-            $paidAt = !empty($data['paid_at'])
-                ? Carbon::parse((string) $data['paid_at'])->timezone('Asia/Jakarta')
-                : now();
-            $settledAt = !empty($data['settled_at'])
-                ? Carbon::parse((string) $data['settled_at'])->timezone('Asia/Jakarta')
-                : now();
+            $paidAt = $this->parseTimestamp($data['paid_at'] ?? null);
+            $settledAt = $this->parseTimestamp($data['settled_at'] ?? null);
 
             $payment->forceFill([
                 'status' => PaymentStatus::Paid,
@@ -225,7 +255,7 @@ class PaymentSettlementService
         });
 
         if ($result['outcome'] === 'not_found') {
-            $this->recordLog($request, $svixId, $externalRef, $orderId, 'payment.completed', $verificationMethod, 422, 'failed', $payload, 'Matching payment not found.');
+            $this->recordLog($request, null, $externalRef, $orderId, 'payment.completed', $verificationMethod, 422, 'failed', $payload, 'Matching payment not found.');
 
             return [
                 'http_status' => 422,
@@ -233,12 +263,12 @@ class PaymentSettlementService
             ];
         }
 
-        if ($result['outcome'] === 'amount_mismatch') {
-            $this->recordLog($request, $svixId, $externalRef, $orderId, 'payment.completed', $verificationMethod, 422, 'failed', $payload, $result['error']);
+        if (in_array($result['outcome'], ['amount_mismatch', 'invalid_state', 'currency_mismatch'], true)) {
+            $this->recordLog($request, null, $externalRef, $orderId, 'payment.completed', $verificationMethod, 422, 'failed', $payload, $result['error']);
 
             return [
                 'http_status' => 422,
-                'body' => ['received' => false, 'error' => 'amount_mismatch'],
+                'body' => ['received' => false, 'error' => $result['outcome']],
             ];
         }
 
@@ -276,14 +306,24 @@ class PaymentSettlementService
             ? PaymentStatus::Failed
             : PaymentStatus::Expired;
 
-        $payment = Payment::query()
-            ->when($externalRef !== null, fn ($q) => $q->where('external_reference', $externalRef))
-            ->when($externalRef === null && $orderId !== null, fn ($q) => $q->where('payment_code', $orderId))
-            ->first();
+        DB::transaction(function () use ($externalRef, $orderId, $targetStatus): void {
+            $paymentQuery = Payment::query()->where('gateway', 'sumopod_qris');
 
-        if ($payment !== null && $payment->status === PaymentStatus::Pending) {
-            $payment->forceFill(['status' => $targetStatus])->save();
-        }
+            if ($externalRef !== null && $orderId !== null) {
+                $paymentQuery->where('external_reference', $externalRef)
+                    ->where('payment_code', $orderId);
+            } elseif ($externalRef !== null) {
+                $paymentQuery->where('external_reference', $externalRef);
+            } else {
+                $paymentQuery->where('payment_code', $orderId);
+            }
+
+            $payment = $paymentQuery->lockForUpdate()->first();
+
+            if ($payment !== null && $payment->status === PaymentStatus::Pending) {
+                $payment->forceFill(['status' => $targetStatus])->save();
+            }
+        });
 
         $this->recordLog($request, $svixId, $externalRef, $orderId, $eventType, $verificationMethod, 200, 'processed', $payload);
 
@@ -291,6 +331,19 @@ class PaymentSettlementService
             'http_status' => 200,
             'body' => ['received' => true, 'status' => 'processed'],
         ];
+    }
+
+    private function parseTimestamp(mixed $value): Carbon
+    {
+        if (is_string($value) && trim($value) !== '') {
+            try {
+                return Carbon::parse($value)->timezone('Asia/Jakarta');
+            } catch (\Throwable) {
+                // Fall back to current server timestamp on malformed gateway date
+            }
+        }
+
+        return now();
     }
 
     /**
@@ -308,24 +361,28 @@ class PaymentSettlementService
         array $payload,
         ?string $errorMessage = null
     ): void {
-        PaymentWebhookLog::query()->create([
-            'svix_id' => $svixId ?: null,
-            'external_reference' => $externalRef,
-            'payment_code' => $paymentCode,
-            'event_type' => $eventType,
-            'verification_method' => $verificationMethod,
-            'signature_valid' => true,
-            'http_status_returned' => $httpStatus,
-            'processing_status' => $processingStatus,
-            'error_message' => $errorMessage,
-            'headers_json' => [
-                'svix-id' => $request->header('svix-id'),
-                'svix-timestamp' => $request->header('svix-timestamp'),
-                'user-agent' => $request->userAgent(),
-            ],
-            'payload_json' => $payload,
-            'processed_at' => now(),
-            'created_at' => now(),
-        ]);
+        try {
+            PaymentWebhookLog::query()->create([
+                'svix_id' => $svixId ?: null,
+                'external_reference' => $externalRef !== null ? mb_substr($externalRef, 0, 100) : null,
+                'payment_code' => $paymentCode !== null ? mb_substr($paymentCode, 0, 60) : null,
+                'event_type' => mb_substr($eventType, 0, 60),
+                'verification_method' => $verificationMethod,
+                'signature_valid' => true,
+                'http_status_returned' => $httpStatus,
+                'processing_status' => $processingStatus,
+                'error_message' => $errorMessage,
+                'headers_json' => [
+                    'svix-id' => $request->header('svix-id'),
+                    'svix-timestamp' => $request->header('svix-timestamp'),
+                    'user-agent' => $request->userAgent(),
+                ],
+                'payload_json' => $payload,
+                'processed_at' => now(),
+                'created_at' => now(),
+            ]);
+        } catch (QueryException) {
+            // Concurrent duplicate svix_id insert is safe to ignore after idempotent processing
+        }
     }
 }

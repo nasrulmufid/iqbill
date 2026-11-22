@@ -158,16 +158,34 @@ class OperationsController extends Controller
         ]);
     }
 
+    private function routerHostValidationRule(): \Closure
+    {
+        return static function (string $attribute, mixed $value, \Closure $fail): void {
+            if (!is_string($value) || !MikrotikRouter::isValidHost($value)) {
+                $fail('Router host must be a valid IPv4 address or hostname and cannot target loopback, metadata, or internal services.');
+            }
+        };
+    }
+
+    private function routerUsernameValidationRule(): \Closure
+    {
+        return static function (string $attribute, mixed $value, \Closure $fail): void {
+            if (!is_string($value) || !MikrotikRouter::isValidUsername($value)) {
+                $fail('Router username must start with an alphanumeric character and only contain letters, numbers, ., _, @, or -.');
+            }
+        };
+    }
+
     public function storeRouter(Request $request): RedirectResponse
     {
         $data = $request->validate([
             'name' => ['required', 'string', 'max:100'],
             'ros_version_type' => ['required', 'in:v6,v7'],
-            'host' => ['required', 'string', 'max:120'],
+            'host' => ['required', 'string', 'max:120', $this->routerHostValidationRule()],
             'api_port' => ['required', 'integer', 'min:1', 'max:65535'],
             'rest_port' => ['nullable', 'integer', 'min:1', 'max:65535'],
             'ssh_port' => ['nullable', 'integer', 'min:1', 'max:65535'],
-            'username' => ['required', 'string', 'max:80'],
+            'username' => ['required', 'string', 'max:80', $this->routerUsernameValidationRule()],
             'password' => ['required', 'string'],
             'isolir_address_list' => ['required', 'string', 'max:80'],
             'isolir_profile_name' => ['nullable', 'string', 'max:80'],
@@ -176,12 +194,12 @@ class OperationsController extends Controller
         MikrotikRouter::query()->create([
             'name' => $data['name'],
             'ros_version_type' => $data['ros_version_type'],
-            'host' => $data['host'],
+            'host' => trim($data['host']),
             'api_port' => $data['api_port'],
             'rest_port' => $data['rest_port'] ?? ($request->boolean('use_ssl') ? 443 : 80),
             'ssh_port' => $data['ssh_port'] ?? 22,
             'use_ssl' => $request->boolean('use_ssl'),
-            'username' => $data['username'],
+            'username' => trim($data['username']),
             'password_encrypted' => $data['password'],
             'isolir_address_list' => $data['isolir_address_list'],
             'isolir_profile_name' => $data['isolir_profile_name'] ?? null,
@@ -196,11 +214,11 @@ class OperationsController extends Controller
         $data = $request->validate([
             'name' => ['required', 'string', 'max:100'],
             'ros_version_type' => ['required', 'in:v6,v7'],
-            'host' => ['required', 'string', 'max:120'],
+            'host' => ['required', 'string', 'max:120', $this->routerHostValidationRule()],
             'api_port' => ['required', 'integer', 'min:1', 'max:65535'],
             'rest_port' => ['nullable', 'integer', 'min:1', 'max:65535'],
             'ssh_port' => ['nullable', 'integer', 'min:1', 'max:65535'],
-            'username' => ['required', 'string', 'max:80'],
+            'username' => ['required', 'string', 'max:80', $this->routerUsernameValidationRule()],
             'password' => ['nullable', 'string'],
             'isolir_address_list' => ['required', 'string', 'max:80'],
             'isolir_profile_name' => ['nullable', 'string', 'max:80'],
@@ -210,12 +228,12 @@ class OperationsController extends Controller
         $updates = [
             'name' => $data['name'],
             'ros_version_type' => $data['ros_version_type'],
-            'host' => $data['host'],
+            'host' => trim($data['host']),
             'api_port' => $data['api_port'],
             'rest_port' => $data['rest_port'] ?? $router->rest_port,
             'ssh_port' => $data['ssh_port'] ?? $router->ssh_port,
             'use_ssl' => $request->boolean('use_ssl'),
-            'username' => $data['username'],
+            'username' => trim($data['username']),
             'isolir_address_list' => $data['isolir_address_list'],
             'isolir_profile_name' => $data['isolir_profile_name'] ?? null,
             'is_active' => $request->boolean('is_active', true),
@@ -234,6 +252,13 @@ class OperationsController extends Controller
     {
         if ($router->subscriptions()->exists()) {
             return back()->with('error', 'Router cannot be deleted because it still has associated subscriptions.');
+        }
+
+        foreach ($router->backups()->get(['id', 'file_path']) as $backup) {
+            $path = (string) $backup->file_path;
+            if (str_starts_with($path, 'mikrotik-backups/') && !str_contains($path, '..') && \Illuminate\Support\Facades\Storage::disk('local')->exists($path)) {
+                \Illuminate\Support\Facades\Storage::disk('local')->delete($path);
+            }
         }
 
         $router->delete();
@@ -270,11 +295,19 @@ class OperationsController extends Controller
 
             return back()->with('success', "Connected to router {$info['identity']}! RouterOS {$info['version']} (Uptime: {$info['uptime']}){$reconciledNote}");
         } catch (Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('MikroTik router connection test failed', [
+                'router_id' => $router->id,
+                'router_name' => $router->name,
+                'error' => $e->getMessage(),
+            ]);
+
+            $safeError = 'Unable to connect to the MikroTik router. Verify host, port, credentials, and network reachability.';
+
             if ($request->expectsJson()) {
-                return response()->json(['ok' => false, 'error' => $e->getMessage()], 422);
+                return response()->json(['ok' => false, 'error' => $safeError], 422);
             }
 
-            return back()->with('error', "Failed to connect to {$router->name}: {$e->getMessage()}");
+            return back()->with('error', "Failed to connect to {$router->name}: {$safeError}");
         }
     }
 
@@ -404,7 +437,6 @@ class OperationsController extends Controller
             'usageBySub' => $usageBySub,
             'packages' => Package::query()->with('routers:id,name')->where('is_active', true)->orderBy('price')->get(),
             'routers' => MikrotikRouter::query()->where('is_active', true)->orderBy('name')->get(),
-            'googleMapsApiKey' => CompanySetting::current()->google_maps_api_key_encrypted,
         ]);
     }
 
@@ -440,7 +472,7 @@ class OperationsController extends Controller
             'isolir_day' => ['nullable', 'integer', 'min:1', 'max:28'],
             'payment_method' => ['nullable', 'in:online,cash'],
             'portal_username' => ['nullable', 'string', 'max:80', 'unique:users,username'],
-            'portal_password' => ['nullable', 'string', 'min:4'],
+            'portal_password' => ['nullable', 'string', 'min:8'],
         ], [
             'customer_code.unique' => 'Customer ID ":input" is already in use by another customer. Change it or leave blank to auto-generate.',
             'phone_whatsapp.regex' => 'WhatsApp number must contain digits only in 628xxxxxxxxxx format.',
@@ -463,7 +495,7 @@ class OperationsController extends Controller
         }
 
         $cust = $result['customer'];
-        $msg = "Customer {$cust->full_name} ({$cust->customer_code}) added successfully. Portal Account: {$result['portal_username']} / {$result['portal_password']}.";
+        $msg = "Customer {$cust->full_name} ({$cust->customer_code}) added successfully. Portal username: {$result['portal_username']}.";
 
         if ($result['subscription'] !== null) {
             $msg .= ($data['payment_method'] ?? 'online') === 'cash'
@@ -471,7 +503,10 @@ class OperationsController extends Controller
                 : ' Invoice & Smart Payment Link sent to customer WhatsApp.';
         }
 
-        return redirect()->route('admin.customers.show', $cust)->with('success', $msg);
+        return redirect()
+            ->route('admin.customers.show', $cust)
+            ->with('success', $msg)
+            ->with('generated_portal_password', $result['portal_password']);
     }
 
     public function updateCustomer(Request $request, Customer $customer): RedirectResponse
@@ -503,31 +538,50 @@ class OperationsController extends Controller
 
         $data = $request->validate([
             'portal_username' => ['required', 'string', 'max:80', Rule::unique('users', 'username')->ignore($userId)],
-            'portal_password' => ['nullable', 'string', 'min:4'],
+            'portal_password' => ['nullable', 'string', 'min:8'],
         ], [
             'portal_username.unique' => 'Portal username ":input" is already used by another account.',
         ]);
 
         if ($customer->user !== null) {
+            abort_unless(
+                $customer->user->role === UserRole::Customer,
+                403,
+                'Cannot modify a non-customer user account from customer portal settings.'
+            );
+
+            $credentialsChanged = $customer->user->username !== $data['portal_username'] || !empty($data['portal_password']);
             $updates = ['username' => $data['portal_username'], 'name' => $customer->full_name];
             if (!empty($data['portal_password'])) {
                 $updates['password'] = Hash::make($data['portal_password']);
             }
             $customer->user->update($updates);
-        } else {
-            $user = User::query()->create([
-                'name' => $customer->full_name,
-                'email' => $customer->email && !User::query()->where('email', $customer->email)->exists() ? $customer->email : null,
-                'username' => $data['portal_username'],
-                'password' => Hash::make($data['portal_password'] ?: '12345678'),
-                'role' => UserRole::Customer,
-                'is_active' => true,
-                'email_verified_at' => now(),
-            ]);
-            $customer->forceFill(['user_id' => $user->id])->save();
+
+            if ($credentialsChanged) {
+                $customer->user->revokeAllSessions();
+            }
+
+            return back()->with('success', "Customer portal account ({$data['portal_username']}) updated successfully.");
         }
 
-        return back()->with('success', "Customer portal account ({$data['portal_username']}) updated successfully.");
+        $generatedPassword = !empty($data['portal_password'])
+            ? (string) $data['portal_password']
+            : Str::password(12, letters: true, numbers: true, symbols: false);
+
+        $user = User::query()->create([
+            'name' => $customer->full_name,
+            'email' => $customer->email && !User::query()->where('email', $customer->email)->exists() ? $customer->email : null,
+            'username' => $data['portal_username'],
+            'password' => Hash::make($generatedPassword),
+            'role' => UserRole::Customer,
+            'is_active' => true,
+            'email_verified_at' => now(),
+        ]);
+        $customer->forceFill(['user_id' => $user->id])->save();
+
+        return back()
+            ->with('success', "Customer portal account ({$data['portal_username']}) created successfully.")
+            ->with('generated_portal_password', empty($data['portal_password']) ? $generatedPassword : null);
     }
 
     public function destroyCustomer(Customer $customer): RedirectResponse

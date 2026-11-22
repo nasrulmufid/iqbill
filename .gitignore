@@ -17,3 +17,8 @@ yarn-error.log
 /.fleet
 /.idea
 /.vscode
+/laravel
+/database/*.sqlite
+/database/*.sqlite-journal
+*.sqlite
+*.sqlite3

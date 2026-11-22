@@ -123,6 +123,35 @@ class SystemHealthService
     }
 
     /**
+     * Lightweight, read-only readiness check for public /api/health probes.
+     *
+     * @return array{database: bool, cache: bool}
+     */
+    public function checkMinimalReadiness(): array
+    {
+        $dbOk = false;
+        try {
+            DB::select('SELECT 1');
+            $dbOk = true;
+        } catch (Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Health readiness DB check failed', ['error' => $e->getMessage()]);
+        }
+
+        $cacheOk = false;
+        try {
+            Cache::get(self::CACHE_SCHEDULER_HEARTBEAT);
+            $cacheOk = true;
+        } catch (Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Health readiness cache check failed', ['error' => $e->getMessage()]);
+        }
+
+        return [
+            'database' => $dbOk,
+            'cache' => $cacheOk,
+        ];
+    }
+
+    /**
      * @param  array{scheduler: array<string, mixed>, queue_worker: array<string, mixed>}|null  $automation
      * @return array<string, array{ok: bool, label: string, detail: string}>
      */
@@ -141,10 +170,11 @@ class SystemHealthService
                 'detail' => "Connected ({$ms} ms)",
             ];
         } catch (Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('SystemHealthService DB check failed', ['error' => $e->getMessage()]);
             $checks['database'] = [
                 'ok' => false,
                 'label' => 'Database',
-                'detail' => $e->getMessage(),
+                'detail' => 'Database connection failed. Check server logs.',
             ];
         }
 
@@ -160,10 +190,11 @@ class SystemHealthService
                 'detail' => $val === 'ok' ? 'Read/Write OK' : 'Failed to read cache',
             ];
         } catch (Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('SystemHealthService cache check failed', ['error' => $e->getMessage()]);
             $checks['cache'] = [
                 'ok' => false,
                 'label' => 'Cache / Lock',
-                'detail' => $e->getMessage(),
+                'detail' => 'Cache store unreachable. Check server logs.',
             ];
         }
 
@@ -217,7 +248,7 @@ class SystemHealthService
                 'ok' => $this->telegram->isConfigured(),
                 'label' => 'Telegram Admin Bot',
                 'detail' => $this->telegram->isConfigured()
-                    ? 'Active (Chat ID: ' . $settings->telegram_chat_id . ')'
+                    ? 'Active'
                     : 'Disabled or token not set',
             ];
         }
@@ -264,12 +295,14 @@ class SystemHealthService
         try {
             $raw = Cache::get(self::CACHE_SCHEDULER_HEARTBEAT);
         } catch (Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('SystemHealthService scheduler status read failed', ['error' => $e->getMessage()]);
+
             return [
                 'ok' => false,
                 'state' => 'failed',
                 'status_label' => 'Cache Error',
                 'label' => 'Laravel Scheduler',
-                'detail' => $e->getMessage(),
+                'detail' => 'Unable to read scheduler heartbeat from cache.',
                 'last_run_at' => null,
                 'last_run_iso' => null,
                 'last_run_human' => null,
@@ -412,11 +445,13 @@ class SystemHealthService
                 'ping_pending_seconds' => $pendingPingAge,
             ]);
         } catch (Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('SystemHealthService queue worker status read failed', ['error' => $e->getMessage()]);
+
             return array_merge($base, [
                 'ok' => false,
                 'state' => 'failed',
                 'status_label' => 'Queue Error',
-                'detail' => $e->getMessage(),
+                'detail' => 'Unable to inspect queue worker status. Check server logs.',
             ]);
         }
     }

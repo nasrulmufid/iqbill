@@ -13,9 +13,9 @@ use App\Services\Mikrotik\MikrotikBackupService;
 use App\Services\Mikrotik\PppoeUsageSyncService;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
+use Illuminate\Http\Response;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\View\View;
-use Symfony\Component\HttpFoundation\StreamedResponse;
 use Throwable;
 
 class MikrotikToolsController extends Controller
@@ -35,7 +35,9 @@ class MikrotikToolsController extends Controller
             'notes' => ['nullable', 'string', 'max:255'],
         ]);
 
-        $router = MikrotikRouter::query()->findOrFail($data['mikrotik_router_id']);
+        $router = MikrotikRouter::query()
+            ->where('is_active', true)
+            ->findOrFail($data['mikrotik_router_id']);
 
         try {
             $backup = $backupService->createRscBackup($router, $request->user(), $data['notes'] ?? null);
@@ -46,24 +48,39 @@ class MikrotikToolsController extends Controller
         }
     }
 
-    public function downloadBackup(MikrotikBackup $backup): StreamedResponse|RedirectResponse
+    public function downloadBackup(MikrotikBackup $backup, MikrotikBackupService $backupService): Response|RedirectResponse
     {
-        if (!Storage::disk('local')->exists($backup->file_path)) {
+        if (!$this->isSafeBackupPath((string) $backup->file_path) || !Storage::disk('local')->exists($backup->file_path)) {
             return back()->with('error', 'Backup file not found in storage.');
         }
 
-        return Storage::disk('local')->download($backup->file_path, $backup->filename);
+        $raw = (string) Storage::disk('local')->get($backup->file_path);
+        $content = $backupService->readBackupContents($raw);
+        $safeFilename = basename(preg_replace('/[^A-Za-z0-9._-]+/', '-', (string) $backup->filename) ?: 'backup.rsc');
+
+        return response($content, 200, [
+            'Content-Type' => 'text/plain; charset=UTF-8',
+            'Content-Disposition' => 'attachment; filename="' . $safeFilename . '"',
+            'Cache-Control' => 'no-store, private',
+        ]);
     }
 
     public function destroyBackup(MikrotikBackup $backup): RedirectResponse
     {
-        if (Storage::disk('local')->exists($backup->file_path)) {
+        if ($this->isSafeBackupPath((string) $backup->file_path) && Storage::disk('local')->exists($backup->file_path)) {
             Storage::disk('local')->delete($backup->file_path);
         }
 
         $backup->delete();
 
         return back()->with('success', 'Backup deleted successfully.');
+    }
+
+    private function isSafeBackupPath(string $path): bool
+    {
+        return str_starts_with($path, 'mikrotik-backups/')
+            && !str_contains($path, '..')
+            && !str_contains($path, '\\');
     }
 
     public function pppoeUsage(Request $request): View

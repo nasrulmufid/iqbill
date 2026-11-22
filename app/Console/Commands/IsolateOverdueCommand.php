@@ -51,26 +51,56 @@ class IsolateOverdueCommand extends Command
         $isolatedCount = 0;
 
         foreach ($invoices as $invoice) {
-            DB::transaction(function () use ($invoice): void {
-                $invoice->forceFill(['status' => InvoiceStatus::Overdue])->save();
+            $isolated = DB::transaction(function () use ($invoice): bool {
+                $lockedInvoice = Invoice::query()
+                    ->with('customer')
+                    ->whereKey($invoice->id)
+                    ->lockForUpdate()
+                    ->first();
 
-                $invoice->subscription->forceFill([
+                if (
+                    $lockedInvoice === null
+                    || !in_array($lockedInvoice->status, [InvoiceStatus::Unpaid, InvoiceStatus::Overdue], true)
+                ) {
+                    return false;
+                }
+
+                $lockedSubscription = \App\Models\Subscription::query()
+                    ->whereKey($lockedInvoice->subscription_id)
+                    ->lockForUpdate()
+                    ->first();
+
+                if (
+                    $lockedSubscription === null
+                    || $lockedSubscription->status !== SubscriptionStatus::Active
+                    || !$lockedSubscription->auto_isolate
+                ) {
+                    return false;
+                }
+
+                $lockedInvoice->forceFill(['status' => InvoiceStatus::Overdue])->save();
+
+                $lockedSubscription->forceFill([
                     'status' => SubscriptionStatus::Isolated,
                     'isolated_at' => now(),
                 ])->save();
 
                 app(MikrotikProvisioningService::class)->queueAction(
-                    $invoice->subscription,
+                    $lockedSubscription,
                     'isolate',
                     'scheduler_isolir',
                     afterCommit: true
                 );
 
-                SendWhatsAppNotificationJob::dispatch($invoice->customer, 'service_isolated', $invoice)
+                SendWhatsAppNotificationJob::dispatch($lockedInvoice->customer, 'service_isolated', $lockedInvoice)
                     ->afterCommit();
+
+                return true;
             });
 
-            $isolatedCount++;
+            if ($isolated) {
+                $isolatedCount++;
+            }
         }
 
         $this->info("Isolated {$isolatedCount} subscription(s).");

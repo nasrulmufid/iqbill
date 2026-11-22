@@ -81,7 +81,7 @@ class MikrotikReconciliationService
 
             if ($routerSynced > 0) {
                 $this->telegram->sendMessage(
-                    "✅ <b>Router {$router->name} Back Online</b>\n{$routerSynced} pending customer service task(s) automatically reconciled &amp; synced."
+                    '✅ <b>Router ' . e((string) $router->name) . " Back Online</b>\n{$routerSynced} pending customer service task(s) automatically reconciled &amp; synced."
                 );
             }
         }

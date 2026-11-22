@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Services\Payment;
 
+use App\Enums\InvoiceStatus;
 use App\Enums\PaymentStatus;
+use App\Exceptions\SumopodException;
 use App\Models\CompanySetting;
 use App\Models\Invoice;
 use App\Models\Payment;
@@ -14,6 +16,8 @@ use Illuminate\Support\Facades\DB;
 
 class SumopodPaymentSessionService
 {
+    private const MAX_PAYMENT_ATTEMPTS = 50;
+
     public function __construct(
         private readonly SumopodGatewayService $gateway
     ) {
@@ -21,42 +25,73 @@ class SumopodPaymentSessionService
 
     public function getOrCreateActiveSession(Invoice $invoice): Payment
     {
+        if (!in_array($invoice->status, [InvoiceStatus::Unpaid, InvoiceStatus::Overdue], true)) {
+            throw new SumopodException('Invoice is not payable.');
+        }
+
         $active = $this->findActiveSession($invoice);
         if ($active !== null) {
             return $active;
         }
 
-        return Cache::lock("reissue_payment:{$invoice->id}", 10)
-            ->block(5, function () use ($invoice): Payment {
+        return Cache::lock("reissue_payment:{$invoice->id}", 25)
+            ->block(12, function () use ($invoice): Payment {
                 $invoice->refresh();
+
+                if (!in_array($invoice->status, [InvoiceStatus::Unpaid, InvoiceStatus::Overdue], true)) {
+                    throw new SumopodException('Invoice is no longer payable.');
+                }
 
                 $active = $this->findActiveSession($invoice);
                 if ($active !== null) {
                     return $active;
                 }
 
+                if ($invoice->payment_attempt_count >= self::MAX_PAYMENT_ATTEMPTS) {
+                    throw new SumopodException('Maximum payment session attempts reached for this invoice. Please contact support.');
+                }
+
                 $nextAttempt = $invoice->payment_attempt_count + 1;
                 $paymentCode = $this->buildPaymentCode($invoice, $nextAttempt);
                 $response = $this->gateway->createQrisPayment($paymentCode, $invoice);
 
-                return DB::transaction(function () use ($invoice, $nextAttempt, $paymentCode, $response): Payment {
+                try {
+                    $expiresAt = Carbon::parse((string) ($response['expires_at'] ?? ''))->timezone('Asia/Jakarta');
+                } catch (\Throwable) {
+                    $expiresAt = now('Asia/Jakarta')->addHours(24);
+                }
+
+                return DB::transaction(function () use ($invoice, $nextAttempt, $paymentCode, $response, $expiresAt): Payment {
+                    $lockedInvoice = Invoice::query()
+                        ->whereKey($invoice->id)
+                        ->lockForUpdate()
+                        ->firstOrFail();
+
+                    if (!in_array($lockedInvoice->status, [InvoiceStatus::Unpaid, InvoiceStatus::Overdue], true)) {
+                        throw new SumopodException('Invoice is no longer payable.');
+                    }
+
                     Payment::query()
-                        ->where('invoice_id', $invoice->id)
+                        ->where('invoice_id', $lockedInvoice->id)
                         ->where('status', PaymentStatus::Pending->value)
+                        ->where(function ($q): void {
+                            $q->whereNull('qris_expires_at')
+                                ->orWhere('qris_expires_at', '<=', now()->addMinutes(2));
+                        })
                         ->update(['status' => PaymentStatus::Expired->value]);
 
-                    $invoice->forceFill([
+                    $lockedInvoice->forceFill([
                         'payment_attempt_count' => $nextAttempt,
                     ])->save();
 
-                    $amount = (float) $invoice->total_amount;
+                    $amount = (float) $lockedInvoice->total_amount;
                     $fee = isset($response['fee']) ? (float) $response['fee'] : 0.0;
                     $netAmount = isset($response['net_amount'])
                         ? (float) $response['net_amount']
                         : max(0.0, $amount - $fee);
 
                     return Payment::query()->create([
-                        'invoice_id' => $invoice->id,
+                        'invoice_id' => $lockedInvoice->id,
                         'attempt_number' => $nextAttempt,
                         'payment_code' => $paymentCode,
                         'external_reference' => (string) $response['payment_id'],
@@ -66,7 +101,7 @@ class SumopodPaymentSessionService
                         'net_amount' => $netAmount,
                         'qris_string' => (string) $response['payment_code'],
                         'payment_url' => (string) $response['payment_link_url'],
-                        'qris_expires_at' => Carbon::parse((string) $response['expires_at'])->timezone('Asia/Jakarta'),
+                        'qris_expires_at' => $expiresAt,
                         'status' => PaymentStatus::Pending,
                     ]);
                 });
