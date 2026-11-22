@@ -56,6 +56,11 @@ test('Add Customer auto-generates IQ-yymmddXXX ID, creates default portal login 
         ->and($customer->customer_code)->toMatch('/^IQ-' . now('Asia/Jakarta')->format('ymd') . '\d{3,4}$/');
 
     $response->assertRedirect(route('admin.customers.show', $customer));
+    $generatedPassword = (string) session('generated_portal_password');
+    expect($generatedPassword)->not->toBe('')
+        ->and($generatedPassword)->not->toBe('12345678')
+        ->and(strlen($generatedPassword))->toBeGreaterThanOrEqual(12)
+        ->and((string) session('success'))->not->toContain($generatedPassword);
 
     $expectedUsername = preg_replace('/^IQ-?/i', '', $customer->customer_code);
     expect($customer->user->username)->toBe($expectedUsername);
@@ -66,11 +71,16 @@ test('Add Customer auto-generates IQ-yymmddXXX ID, creates default portal login 
 
     Queue::assertPushed(SendWhatsAppNotificationJob::class, fn ($j) => $j->templateType === 'invoice_created');
 
-    // Pelanggan bisa login ke portal dengan username (tanpa IQ) dan password default 12345678
+    // Pelanggan tidak bisa login dengan password default lemah 12345678, tetapi bisa dengan password acak yang di-generate
     $this->post('/logout');
     $this->post(route('login.attempt'), [
         'email' => $expectedUsername,
         'password' => '12345678',
+    ])->assertSessionHasErrors('email');
+
+    $this->post(route('login.attempt'), [
+        'email' => $expectedUsername,
+        'password' => $generatedPassword,
     ])->assertRedirect(route('portal.dashboard'));
 });
 

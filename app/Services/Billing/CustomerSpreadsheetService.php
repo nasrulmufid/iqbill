@@ -11,12 +11,35 @@ use App\Models\Package;
 use App\Models\Subscription;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Shuchkin\SimpleXLSX;
 use Shuchkin\SimpleXLSXGen;
 use Throwable;
+use ZipArchive;
 
 class CustomerSpreadsheetService
 {
+    private const MAX_IMPORT_ROWS = 5000;
+
+    private const MAX_ZIP_ENTRIES = 100;
+
+    private const MAX_ZIP_UNCOMPRESSED_BYTES = 33554432; // 32 MiB
+
+    private const MAX_ZIP_COMPRESSION_RATIO = 100;
+
+    public static function neutralizeSpreadsheetCell(mixed $value): mixed
+    {
+        if (!is_string($value) || $value === '') {
+            return $value;
+        }
+
+        if (preg_match('/^[\t\r\n ]*[=+\-@]|^[\t\r]/', $value) === 1) {
+            return "'" . $value;
+        }
+
+        return $value;
+    }
+
     public function exportXlsxBinary(): string
     {
         $rows = [[
@@ -41,20 +64,23 @@ class CustomerSpreadsheetService
 
         foreach ($customers as $customer) {
             $sub = $customer->subscriptions->first();
-            $rows[] = [
-                $customer->customer_code,
-                $customer->full_name,
-                $customer->phone_whatsapp,
-                $customer->email ?? '',
-                $customer->nik_npwp ?? '',
-                $customer->installation_address,
-                $sub?->package?->code ?? '',
-                $sub?->mikrotikRouter?->name ?? '',
-                $sub?->service_username ?? '',
-                $sub?->isolir_day ?? '',
-                $sub ? ($sub->auto_isolate ? 'YES' : 'NO') : '',
-                $sub?->status->value ?? '-',
-            ];
+            $rows[] = array_map(
+                [self::class, 'neutralizeSpreadsheetCell'],
+                [
+                    $customer->customer_code,
+                    $customer->full_name,
+                    $customer->phone_whatsapp,
+                    $customer->email ?? '',
+                    $customer->nik_npwp ?? '',
+                    $customer->installation_address,
+                    $sub?->package?->code ?? '',
+                    $sub?->mikrotikRouter?->name ?? '',
+                    $sub?->service_username ?? '',
+                    $sub?->isolir_day ?? '',
+                    $sub ? ($sub->auto_isolate ? 'YES' : 'NO') : '',
+                    $sub?->status->value ?? '-',
+                ]
+            );
         }
 
         return SimpleXLSXGen::fromArray($rows)->__toString();
@@ -102,12 +128,17 @@ class CustomerSpreadsheetService
     public function importFile(UploadedFile $file): array
     {
         $ext = strtolower($file->getClientOriginalExtension());
+        $path = $file->getRealPath() ?: $file->getPathname();
         $rows = $ext === 'csv'
-            ? $this->parseCsv($file->getRealPath() ?: $file->getPathname())
-            : $this->parseXlsx($file->getRealPath() ?: $file->getPathname());
+            ? $this->parseCsv($path)
+            : $this->parseXlsx($path);
 
         if (count($rows) < 2) {
             return ['imported' => 0, 'updated' => 0, 'errors' => ['File is empty or contains header row only.']];
+        }
+
+        if (count($rows) - 1 > self::MAX_IMPORT_ROWS) {
+            throw new \RuntimeException('Import file exceeds the maximum allowed limit of ' . self::MAX_IMPORT_ROWS . ' rows.');
         }
 
         $headers = array_map(
@@ -132,14 +163,20 @@ class CustomerSpreadsheetService
             $name = $assoc['full_name'] ?? $assoc['nama_lengkap'] ?? '';
             $phone = Customer::normalizeWhatsappPhone($assoc['phone_whatsapp'] ?? $assoc['no_whatsapp'] ?? '');
             $address = $assoc['installation_address'] ?? $assoc['alamat'] ?? '';
+            $rawEmail = $assoc['email'] ?? '';
 
             if ($code === '' || $name === '' || $phone === '') {
                 $errors[] = "Row {$lineNum}: customer_code, full_name, and phone_whatsapp are required.";
                 continue;
             }
 
+            if ($rawEmail !== '' && filter_var($rawEmail, FILTER_VALIDATE_EMAIL) === false) {
+                $errors[] = "Row {$lineNum} ({$code}): Invalid email address '{$rawEmail}'.";
+                continue;
+            }
+
             try {
-                DB::transaction(function () use ($assoc, $code, $name, $phone, $address, &$imported, &$updated): void {
+                DB::transaction(function () use ($assoc, $code, $name, $phone, $address, $rawEmail, &$imported, &$updated): void {
                     $existing = Customer::query()->where('customer_code', $code)->first();
 
                     $customer = Customer::query()->updateOrCreate(
@@ -147,8 +184,8 @@ class CustomerSpreadsheetService
                         [
                             'full_name' => $name,
                             'phone_whatsapp' => $phone,
-                            'email' => ($assoc['email'] ?? '') !== '' ? $assoc['email'] : null,
-                            'installation_address' => $address !== '' ? $address : '-',
+                            'email' => $rawEmail !== '' ? $rawEmail : $existing?->email,
+                            'installation_address' => $address !== '' ? $address : ($existing?->installation_address ?: '-'),
                         ]
                     );
 
@@ -176,20 +213,42 @@ class CustomerSpreadsheetService
                             $isolirDay = $isolirDayRaw !== '' ? max(1, min(28, (int) $isolirDayRaw)) : null;
                             $autoIsolate = !in_array(strtolower((string) ($assoc['auto_isolate'] ?? '1')), ['0', 'false', 'tidak', 'no'], true);
 
-                            Subscription::query()->updateOrCreate(
-                                ['service_username' => $pppoeUser],
-                                [
+                            $existingSub = Subscription::query()->where('service_username', $pppoeUser)->first();
+
+                            if ($existingSub !== null) {
+                                if ((int) $existingSub->customer_id !== (int) $customer->id) {
+                                    throw new \RuntimeException("PPPoE username '{$pppoeUser}' is already assigned to another customer.");
+                                }
+
+                                $subUpdates = [
+                                    'package_id' => $package->id,
+                                    'mikrotik_router_id' => $router->id,
+                                    'billing_day' => $billingDay,
+                                    'isolir_day' => $isolirDay,
+                                    'auto_isolate' => $autoIsolate,
+                                ];
+
+                                if (($assoc['service_password'] ?? '') !== '') {
+                                    $subUpdates['service_password_encrypted'] = $assoc['service_password'];
+                                }
+
+                                $existingSub->update($subUpdates);
+                            } else {
+                                $generatedPass = Str::password(12, letters: true, numbers: true, symbols: false);
+
+                                Subscription::query()->create([
                                     'customer_id' => $customer->id,
                                     'package_id' => $package->id,
                                     'mikrotik_router_id' => $router->id,
-                                    'service_password_encrypted' => ($assoc['service_password'] ?? '') !== '' ? $assoc['service_password'] : '12345678',
+                                    'service_username' => $pppoeUser,
+                                    'service_password_encrypted' => ($assoc['service_password'] ?? '') !== '' ? $assoc['service_password'] : $generatedPass,
                                     'billing_day' => $billingDay,
                                     'isolir_day' => $isolirDay,
                                     'auto_isolate' => $autoIsolate,
                                     'next_billing_date' => now('Asia/Jakarta')->day(min($billingDay, now('Asia/Jakarta')->daysInMonth))->toDateString(),
                                     'status' => SubscriptionStatus::PendingInstallation,
-                                ]
-                            );
+                                ]);
+                            }
                         }
                     }
                 });
@@ -206,12 +265,50 @@ class CustomerSpreadsheetService
      */
     private function parseXlsx(string $path): array
     {
+        $this->assertSafeXlsxArchive($path);
+
         $xlsx = SimpleXLSX::parse($path);
         if (!$xlsx) {
             throw new \RuntimeException(SimpleXLSX::parseError() ?: 'Failed to read XLSX file.');
         }
 
         return $xlsx->rows();
+    }
+
+    private function assertSafeXlsxArchive(string $path): void
+    {
+        $zip = new ZipArchive();
+        if ($zip->open($path) !== true) {
+            throw new \RuntimeException('Invalid or corrupted XLSX archive.');
+        }
+
+        try {
+            if ($zip->numFiles > self::MAX_ZIP_ENTRIES) {
+                throw new \RuntimeException('XLSX archive contains too many entries.');
+            }
+
+            $totalUncompressed = 0;
+            for ($i = 0; $i < $zip->numFiles; $i++) {
+                $stat = $zip->statIndex($i);
+                if (!is_array($stat)) {
+                    continue;
+                }
+
+                $uncompressed = (int) ($stat['size'] ?? 0);
+                $compressed = (int) ($stat['comp_size'] ?? 0);
+                $totalUncompressed += $uncompressed;
+
+                if ($totalUncompressed > self::MAX_ZIP_UNCOMPRESSED_BYTES) {
+                    throw new \RuntimeException('XLSX archive uncompressed size exceeds allowed safety limit.');
+                }
+
+                if ($compressed > 0 && $uncompressed > 65536 && ($uncompressed / $compressed) > self::MAX_ZIP_COMPRESSION_RATIO) {
+                    throw new \RuntimeException('XLSX archive compression ratio exceeds allowed safety limit.');
+                }
+            }
+        } finally {
+            $zip->close();
+        }
     }
 
     /**
@@ -221,10 +318,16 @@ class CustomerSpreadsheetService
     {
         $rows = [];
         if (($handle = fopen($path, 'rb')) !== false) {
-            while (($data = fgetcsv($handle)) !== false) {
-                $rows[] = array_map(static fn ($v) => (string) $v, $data);
+            try {
+                while (($data = fgetcsv($handle)) !== false) {
+                    $rows[] = array_map(static fn ($v) => (string) $v, $data);
+                    if (count($rows) > self::MAX_IMPORT_ROWS + 1) {
+                        throw new \RuntimeException('CSV file exceeds the maximum allowed limit of ' . self::MAX_IMPORT_ROWS . ' rows.');
+                    }
+                }
+            } finally {
+                fclose($handle);
             }
-            fclose($handle);
         }
 
         return $rows;

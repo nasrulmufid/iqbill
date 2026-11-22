@@ -3,12 +3,11 @@
 declare(strict_types=1);
 
 use App\Http\Middleware\EnsureUserHasRole;
+use App\Http\Middleware\EnsureUserIsActive;
 use App\Http\Middleware\SecurityHeaders;
-use App\Services\Notification\TelegramNotificationService;
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
-use Symfony\Component\HttpKernel\Exception\HttpExceptionInterface;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -18,31 +17,25 @@ return Application::configure(basePath: dirname(__DIR__))
         health: '/up',
     )
     ->withMiddleware(function (Middleware $middleware) {
-        $middleware->trustProxies(at: env('TRUSTED_PROXIES', '*'));
+        $trustedProxies = trim((string) env('TRUSTED_PROXIES', ''));
+        if ($trustedProxies !== '') {
+            $middleware->trustProxies(
+                at: $trustedProxies === '*'
+                    ? '*'
+                    : array_values(array_filter(array_map('trim', explode(',', $trustedProxies))))
+            );
+        }
 
+        $middleware->authenticateSessions();
         $middleware->appendToGroup('web', SecurityHeaders::class);
 
         $middleware->redirectGuestsTo(fn () => route('login'));
 
         $middleware->alias([
+            'active' => EnsureUserIsActive::class,
             'role' => EnsureUserHasRole::class,
         ]);
     })
     ->withExceptions(function (Exceptions $exceptions) {
-        $exceptions->report(function (\Throwable $e): void {
-            if ($e instanceof HttpExceptionInterface && $e->getStatusCode() < 500) {
-                return;
-            }
-
-            try {
-                if (app()->bound(TelegramNotificationService::class) && !app()->runningUnitTests()) {
-                    app(TelegramNotificationService::class)->notifyError(
-                        class_basename($e),
-                        $e->getMessage() . ' in ' . basename($e->getFile()) . ':' . $e->getLine()
-                    );
-                }
-            } catch (\Throwable) {
-                // Prevent error handler failures from triggering cascading exceptions
-            }
-        });
+        //
     })->create();

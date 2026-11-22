@@ -5,8 +5,9 @@ cd /var/www/html
 
 ROLE="${CONTAINER_ROLE:-app}"
 
-# Ensure Laravel writable directories exist with proper permissions
+# Ensure Laravel writable directories and PHP-FPM socket directory exist with proper permissions
 mkdir -p \
+    /run/php-fpm \
     storage/app/private \
     storage/app/public \
     storage/framework/cache/data \
@@ -15,7 +16,7 @@ mkdir -p \
     storage/logs \
     bootstrap/cache
 
-chown -R www-data:www-data storage bootstrap/cache
+chown -R www-data:www-data /run/php-fpm storage bootstrap/cache
 
 if [ "${APP_ENV:-production}" = "production" ] && [ -z "${APP_KEY:-}" ]; then
     echo "ERROR: APP_KEY must be set in .env when running in production." >&2
@@ -30,7 +31,7 @@ wait_for_tcp() {
     attempt=1
 
     while [ "$attempt" -le "$max_attempts" ]; do
-        if php -r "\$c = @fsockopen('${host}', (int) ${port}, \$e, \$s, 2); if (\$c) { fclose(\$c); exit(0); } exit(1);" >/dev/null 2>&1; then
+        if php -r '$c = @fsockopen($argv[1], (int) $argv[2], $e, $s, 2); if ($c) { fclose($c); exit(0); } exit(1);' -- "$host" "$port" >/dev/null 2>&1; then
             echo "[entrypoint] ${label} (${host}:${port}) is ready."
             return 0
         fi
@@ -54,16 +55,16 @@ fi
 
 if [ "$ROLE" = "app" ]; then
     if [ ! -L public/storage ]; then
-        php artisan storage:link --no-interaction >/dev/null 2>&1 || true
+        su-exec www-data:www-data php artisan storage:link --no-interaction >/dev/null 2>&1 || true
     fi
 
     if [ "${AUTO_MIGRATE:-true}" = "true" ]; then
         echo "[entrypoint] Running database migrations..."
-        php artisan migrate --force --no-interaction
+        su-exec www-data:www-data php artisan migrate --force --no-interaction
     fi
 
     if [ "${AUTO_SEED:-true}" = "true" ]; then
-        user_count=$(php -r '
+        user_count=$(su-exec www-data:www-data php -r '
             require "vendor/autoload.php";
             $app = require "bootstrap/app.php";
             $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
@@ -73,21 +74,21 @@ if [ "$ROLE" = "app" ]; then
 
         if [ "$user_count" = "0" ]; then
             echo "[entrypoint] Database has no users; running initial database seeder..."
-            php artisan db:seed --force --no-interaction
+            su-exec www-data:www-data php artisan db:seed --force --no-interaction
         fi
     fi
 
     if [ "${GOWA_AUTO_SYNC:-true}" = "true" ]; then
         echo "[entrypoint] Syncing Go-WhatsApp (GOWA) configuration..."
-        php artisan gowa:sync-config --no-interaction || true
+        su-exec www-data:www-data php artisan gowa:sync-config --no-interaction || true
     fi
 
     echo "[entrypoint] Optimizing Laravel caches..."
-    php artisan config:cache --no-interaction
-    php artisan route:cache --no-interaction
-    php artisan view:cache --no-interaction
+    su-exec www-data:www-data php artisan config:cache --no-interaction
+    su-exec www-data:www-data php artisan route:cache --no-interaction
+    su-exec www-data:www-data php artisan view:cache --no-interaction
 
-    chown -R www-data:www-data storage bootstrap/cache
+    chown -R www-data:www-data /run/php-fpm storage bootstrap/cache
     echo "[entrypoint] Starting PHP-FPM server..."
     exec php-fpm -F
 fi
@@ -97,7 +98,7 @@ wait_for_migrations() {
     max_attempts=45
     attempt=1
     while [ "$attempt" -le "$max_attempts" ]; do
-        ready=$(php -r '
+        ready=$(su-exec www-data:www-data php -r '
             require "vendor/autoload.php";
             $app = require "bootstrap/app.php";
             $kernel = $app->make(Illuminate\Contracts\Console\Kernel::class);
@@ -118,12 +119,13 @@ wait_for_migrations() {
 }
 
 wait_for_migrations
-php artisan config:cache --no-interaction
+su-exec www-data:www-data php artisan config:cache --no-interaction
 chown -R www-data:www-data storage bootstrap/cache
 
 if [ "$ROLE" = "queue" ]; then
     echo "[entrypoint] Starting IQ Bill queue worker..."
-    exec php artisan queue:work \
+    exec su-exec www-data:www-data php artisan queue:work \
+        --queue=provisioning,default,broadcasts \
         --sleep=3 \
         --tries=3 \
         --timeout=85 \
@@ -132,8 +134,8 @@ if [ "$ROLE" = "queue" ]; then
         --no-interaction
 elif [ "$ROLE" = "scheduler" ]; then
     echo "[entrypoint] Starting IQ Bill scheduler..."
-    exec php artisan schedule:work --no-interaction
+    exec su-exec www-data:www-data php artisan schedule:work --no-interaction
 else
     echo "[entrypoint] Running custom command..."
-    exec "$@"
+    exec su-exec www-data:www-data "$@"
 fi

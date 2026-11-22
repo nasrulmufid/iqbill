@@ -21,6 +21,7 @@ RUN apk add --no-cache \
         libzip \
         oniguruma \
         sqlite-libs \
+        su-exec \
         tzdata \
     && apk add --no-cache --virtual .build-deps \
         $PHPIZE_DEPS \
@@ -74,10 +75,9 @@ COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 RUN sed -i 's/\r$//' /usr/local/bin/entrypoint.sh \
     && chmod +x /usr/local/bin/entrypoint.sh \
-    && mkdir -p storage/framework/cache/data storage/framework/sessions storage/framework/views storage/logs storage/app/private storage/app/public bootstrap/cache \
-    && chown -R www-data:www-data storage bootstrap/cache
+    && mkdir -p /run/php-fpm storage/framework/cache/data storage/framework/sessions storage/framework/views storage/logs storage/app/private storage/app/public bootstrap/cache \
+    && chown -R www-data:www-data /run/php-fpm storage bootstrap/cache
 
-EXPOSE 9000
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
 
 # Stage 5: Production Nginx Web Server

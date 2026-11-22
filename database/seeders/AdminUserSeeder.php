@@ -13,12 +13,23 @@ class AdminUserSeeder extends Seeder
 {
     public function run(): void
     {
-        $password = env('ADMIN_PASSWORD', 'password');
+        $password = trim((string) env('ADMIN_PASSWORD', ''));
 
-        if (app()->environment('production') && ($password === 'password' || strlen((string) $password) < 12)) {
-            throw new \RuntimeException(
-                'Set ADMIN_PASSWORD (minimum 12 characters) in .env before running the seeder in production.'
-            );
+        if (app()->environment('production')) {
+            $lowerPassword = strtolower($password);
+
+            if (
+                $password === ''
+                || $lowerPassword === 'password'
+                || str_starts_with($lowerPassword, 'change_me')
+                || strlen($password) < 12
+            ) {
+                throw new \RuntimeException(
+                    'Set a strong, non-placeholder ADMIN_PASSWORD (minimum 12 characters) in .env before running the seeder in production.'
+                );
+            }
+        } elseif ($password === '') {
+            $password = 'password';
         }
 
         User::query()->updateOrCreate(

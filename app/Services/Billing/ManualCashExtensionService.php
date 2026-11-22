@@ -36,43 +36,63 @@ class ManualCashExtensionService
         ?string $ipAddress = null,
         bool $sendWaReceipt = true
     ): array {
-        $targetInvoice = $invoice;
+        return DB::transaction(function () use ($subscription, $invoice, $actor, $ipAddress, $sendWaReceipt): array {
+            /** @var Subscription $lockedSub */
+            $lockedSub = Subscription::query()
+                ->whereKey($subscription->id)
+                ->lockForUpdate()
+                ->firstOrFail();
 
-        if ($targetInvoice === null) {
-            $targetInvoice = Invoice::query()
-                ->where('subscription_id', $subscription->id)
-                ->whereIn('status', [InvoiceStatus::Unpaid->value, InvoiceStatus::Overdue->value])
-                ->latest('id')
-                ->first();
-        }
+            if (in_array($lockedSub->status, [SubscriptionStatus::Suspended, SubscriptionStatus::Terminated], true)) {
+                throw new \RuntimeException("Cannot record cash payment for subscription in status '{$lockedSub->status->value}'.");
+            }
 
-        if ($targetInvoice === null) {
-            $targetInvoice = $this->invoiceService->issueForSubscription($subscription, notify: false);
+            $targetInvoice = $invoice;
+
             if ($targetInvoice === null) {
                 $targetInvoice = Invoice::query()
-                    ->where('subscription_id', $subscription->id)
-                    ->where('status', '!=', InvoiceStatus::Cancelled->value)
+                    ->where('subscription_id', $lockedSub->id)
+                    ->whereIn('status', [InvoiceStatus::Unpaid->value, InvoiceStatus::Overdue->value])
                     ->latest('id')
-                    ->firstOrFail();
+                    ->lockForUpdate()
+                    ->first();
+            }
 
-                if ($targetInvoice->status === InvoiceStatus::Paid) {
-                    // Subscriber already paid the current period; advance by 1 month and issue next invoice
-                    $nextStart = $targetInvoice->billing_period_end->copy()->addDay();
-                    if ($subscription->next_billing_date->lessThanOrEqualTo($targetInvoice->billing_period_start)) {
-                        $subscription->forceFill(['next_billing_date' => $nextStart])->save();
+            if ($targetInvoice === null) {
+                $targetInvoice = $this->invoiceService->issueForSubscription($lockedSub, notify: false);
+                if ($targetInvoice === null) {
+                    $targetInvoice = Invoice::query()
+                        ->where('subscription_id', $lockedSub->id)
+                        ->where('status', '!=', InvoiceStatus::Cancelled->value)
+                        ->latest('id')
+                        ->lockForUpdate()
+                        ->firstOrFail();
+
+                    if ($targetInvoice->status === InvoiceStatus::Paid) {
+                        // Subscriber already paid the current period; advance by 1 month and issue next invoice
+                        $nextStart = $targetInvoice->billing_period_end->copy()->addDay();
+                        if ($lockedSub->next_billing_date->lessThanOrEqualTo($targetInvoice->billing_period_start)) {
+                            $lockedSub->forceFill(['next_billing_date' => $nextStart])->save();
+                        }
+                        $targetInvoice = $this->invoiceService->issueForSubscription($lockedSub, notify: false) ?? $targetInvoice;
                     }
-                    $targetInvoice = $this->invoiceService->issueForSubscription($subscription, notify: false) ?? $targetInvoice;
                 }
             }
-        }
 
-        return DB::transaction(function () use ($targetInvoice, $actor, $ipAddress, $sendWaReceipt): array {
             /** @var Invoice $lockedInvoice */
             $lockedInvoice = Invoice::query()
-                ->with(['subscription', 'customer'])
+                ->with(['customer'])
                 ->where('id', $targetInvoice->id)
                 ->lockForUpdate()
                 ->firstOrFail();
+
+            if ((int) $lockedInvoice->subscription_id !== (int) $lockedSub->id) {
+                throw new \RuntimeException('Invoice does not belong to the specified subscription.');
+            }
+
+            if ($lockedInvoice->status === InvoiceStatus::Cancelled) {
+                throw new \RuntimeException('Cannot record cash payment for a cancelled invoice.');
+            }
 
             if ($lockedInvoice->status === InvoiceStatus::Paid) {
                 $paidPayment = $lockedInvoice->payments()
@@ -114,33 +134,32 @@ class ManualCashExtensionService
                 'paid_at' => now(),
             ])->save();
 
-            $subscription = $lockedInvoice->subscription;
             $needsRestore = in_array(
-                $subscription->status,
+                $lockedSub->status,
                 [SubscriptionStatus::Isolated, SubscriptionStatus::PendingInstallation],
                 true
             );
 
             $nextBilling = $lockedInvoice->billing_period_end->copy()->addDay();
             $updates = [
-                'next_billing_date' => $subscription->next_billing_date->greaterThan($nextBilling)
-                    ? $subscription->next_billing_date
+                'next_billing_date' => $lockedSub->next_billing_date->greaterThan($nextBilling)
+                    ? $lockedSub->next_billing_date
                     : $nextBilling,
             ];
 
             if ($needsRestore) {
                 $updates += [
                     'status' => SubscriptionStatus::Active,
-                    'activated_at' => $subscription->activated_at ?? now(),
+                    'activated_at' => $lockedSub->activated_at ?? now(),
                     'isolated_at' => null,
                 ];
             }
 
-            $subscription->forceFill($updates)->save();
+            $lockedSub->forceFill($updates)->save();
 
             if ($needsRestore) {
                 app(MikrotikProvisioningService::class)->queueAction(
-                    $subscription,
+                    $lockedSub,
                     'restore',
                     'manual_noc',
                     invoiceId: $lockedInvoice->id,

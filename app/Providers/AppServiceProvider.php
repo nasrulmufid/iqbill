@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Http\Middleware\EnsureUserHasRole;
+use App\Http\Middleware\EnsureUserIsActive;
 use App\Services\Notification\HttpWhatsAppGateway;
 use App\Services\Notification\WhatsAppGatewayInterface;
 use Illuminate\Support\ServiceProvider;
@@ -23,5 +25,9 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Livewire::forceAssetInjection();
+        Livewire::addPersistentMiddleware([
+            EnsureUserHasRole::class,
+            EnsureUserIsActive::class,
+        ]);
     }
 }

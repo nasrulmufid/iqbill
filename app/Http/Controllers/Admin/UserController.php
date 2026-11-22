@@ -74,6 +74,9 @@ class UserController extends Controller
             return back()->with('error', 'You cannot change your own account role.');
         }
 
+        $passwordChanged = !empty($data['password']);
+        $roleChanged = $data['role'] !== $user->role->value;
+
         $updates = [
             'name' => $data['name'],
             'email' => $data['email'],
@@ -81,11 +84,21 @@ class UserController extends Controller
             'role' => $data['role'],
         ];
 
-        if (!empty($data['password'])) {
+        if ($passwordChanged) {
             $updates['password'] = Hash::make($data['password']);
         }
 
         $user->update($updates);
+
+        if ($passwordChanged || $roleChanged) {
+            $exceptSessionId = $request->user()?->id === $user->id ? $request->session()->getId() : null;
+            $user->revokeAllSessions($exceptSessionId);
+
+            if ($passwordChanged && $request->user()?->id === $user->id) {
+                $request->session()->regenerate();
+                $request->session()->put('password_hash_' . auth()->getDefaultDriver(), $user->getAuthPassword());
+            }
+        }
 
         return back()->with('success', 'User details updated successfully.');
     }
@@ -98,6 +111,10 @@ class UserController extends Controller
 
         $user->forceFill(['is_active' => !$user->is_active])->save();
 
+        if (!$user->is_active) {
+            $user->revokeAllSessions();
+        }
+
         return back()->with('success', $user->is_active ? 'User activated.' : 'User deactivated.');
     }
 
@@ -107,6 +124,7 @@ class UserController extends Controller
             return back()->with('error', 'You cannot delete your own account.');
         }
 
+        $user->revokeAllSessions();
         $user->delete();
 
         return back()->with('success', 'User deleted successfully.');

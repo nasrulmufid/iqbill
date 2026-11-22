@@ -11,7 +11,9 @@ use App\Models\CompanySetting;
 use App\Models\Invoice;
 use App\Models\Payment;
 use App\Services\Payment\SumopodPaymentSessionService;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\View\View;
 use Livewire\Component;
 use SimpleSoftwareIO\QrCode\Facades\QrCode;
@@ -31,7 +33,11 @@ class InvoicePaymentComponent extends Component
         $this->invoice = $invoice->load(['customer', 'subscription.package', 'payments' => fn ($q) => $q->latest('id')]);
 
         if (in_array($this->invoice->status, [InvoiceStatus::Unpaid, InvoiceStatus::Overdue], true)) {
-            $this->loadOrCreateSession($sessionService);
+            if (Gate::allows('pay', $this->invoice)) {
+                $this->loadOrCreateSession($sessionService);
+            } else {
+                $this->activePayment = $this->invoice->payments->firstWhere('status', PaymentStatus::Pending);
+            }
         } elseif ($this->invoice->status === InvoiceStatus::Paid) {
             $this->activePayment = $this->invoice->payments->firstWhere('status', PaymentStatus::Paid);
         }
@@ -42,21 +48,24 @@ class InvoicePaymentComponent extends Component
         Gate::authorize('pay', $this->invoice);
         $this->invoice->refresh();
 
-        if ($this->invoice->status === InvoiceStatus::Paid) {
+        if (!in_array($this->invoice->status, [InvoiceStatus::Unpaid, InvoiceStatus::Overdue], true)) {
             return;
         }
 
-        // Expire current pending session if countdown finished
-        Payment::query()
-            ->where('invoice_id', $this->invoice->id)
-            ->where('status', PaymentStatus::Pending->value)
-            ->update(['status' => PaymentStatus::Expired->value]);
+        $rateKey = 'renew-session:' . (string) auth()->id() . ':' . $this->invoice->id;
+        if (RateLimiter::tooManyAttempts($rateKey, 5)) {
+            $this->errorMessage = 'Too many payment session renewal requests. Please wait a minute and try again.';
+
+            return;
+        }
+        RateLimiter::hit($rateKey, 60);
 
         $this->loadOrCreateSession($sessionService);
     }
 
     public function checkLocalStatus(): void
     {
+        Gate::authorize('view', $this->invoice);
         $this->invoice->refresh()->load(['subscription.package', 'customer', 'payments' => fn ($q) => $q->latest('id')]);
 
         if ($this->invoice->status === InvoiceStatus::Paid) {
@@ -72,6 +81,8 @@ class InvoicePaymentComponent extends Component
             $this->activePayment = $sessionService->getOrCreateActiveSession($this->invoice);
         } catch (SumopodException $e) {
             $this->errorMessage = $e->getMessage();
+        } catch (LockTimeoutException) {
+            $this->errorMessage = 'Payment session is currently being prepared. Please retry in a few seconds.';
         }
     }
 

@@ -102,7 +102,8 @@
                                                 <button type="submit" class="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-medium hover:bg-slate-50">Test</button>
                                             </form>
                                             <form method="POST" action="{{ route('admin.mikrotik.sync-from-db', $router) }}"
-                                                  onsubmit="return confirm('Synchronize package profiles and all PPPoE secrets on {{ $router->name }} to match the application database (1-way sync)?')">
+                                                  data-router-name="{{ $router->name }}"
+                                                  onsubmit="return confirm('Synchronize package profiles and all PPPoE secrets on ' + this.dataset.routerName + ' to match the application database (1-way sync)?')">
                                                 @csrf
                                                 <button type="submit" class="rounded-lg bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white hover:bg-emerald-700 transition">
                                                     Sync DB &rarr; MikroTik

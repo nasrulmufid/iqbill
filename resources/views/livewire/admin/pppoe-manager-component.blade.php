@@ -108,13 +108,13 @@
                                         <td class="px-5 py-3 font-mono text-xs">{{ $s['uptime'] ?? '-' }}</td>
                                         <td class="px-5 py-3 text-right space-x-2 whitespace-nowrap">
                                             @if(!empty($s['name']))
-                                                <button type="button" wire:click="startMonitor('{{ $s['name'] }}')"
+                                                <button type="button" wire:click="startMonitor({{ \Illuminate\Support\Js::from($s['name']) }})"
                                                         class="rounded-lg bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-100">
                                                     Traffic
                                                 </button>
                                             @endif
                                             @if(!empty($s['.id']))
-                                                <button type="button" wire:click="disconnectSession('{{ $s['.id'] }}')"
+                                                <button type="button" wire:click="disconnectSession({{ \Illuminate\Support\Js::from($s['.id']) }})"
                                                         class="rounded-lg bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-100">
                                                     Disconnect
                                                 </button>
@@ -162,11 +162,11 @@
                                         </td>
                                         <td class="px-5 py-3 text-right space-x-2 whitespace-nowrap">
                                             @if(!empty($sec['.id']))
-                                                <button type="button" wire:click="toggleSecret('{{ $sec['.id'] }}', {{ $disabled ? 'true' : 'false' }})"
+                                                <button type="button" wire:click="toggleSecret({{ \Illuminate\Support\Js::from($sec['.id']) }}, {{ $disabled ? 'true' : 'false' }})"
                                                         class="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-medium">
                                                     {{ $disabled ? 'Enable' : 'Disable' }}
                                                 </button>
-                                                <button type="button" wire:click="deleteSecret('{{ $sec['.id'] }}')"
+                                                <button type="button" wire:click="deleteSecret({{ \Illuminate\Support\Js::from($sec['.id']) }})"
                                                         class="rounded-lg bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700">
                                                     Delete
                                                 </button>
@@ -211,7 +211,7 @@
                                         <td class="px-5 py-3 font-mono text-xs">{{ $prof['rate-limit'] ?? '-' }}</td>
                                         <td class="px-5 py-3 text-right">
                                             @if(!empty($prof['.id']))
-                                                <button type="button" wire:click="deleteProfile('{{ $prof['.id'] }}')"
+                                                <button type="button" wire:click="deleteProfile({{ \Illuminate\Support\Js::from($prof['.id']) }})"
                                                         class="rounded-lg bg-rose-50 px-2.5 py-1 text-xs font-semibold text-rose-700">
                                                     Delete
                                                 </button>
@@ -248,7 +248,7 @@
                     </div>
                     <div>
                         <label class="block text-xs font-medium text-slate-600">Password *</label>
-                        <input type="text" wire:model="secretPassword" placeholder="Password" required class="mt-1 w-full rounded-xl border-slate-300 text-sm">
+                        <input type="password" autocomplete="new-password" wire:model="secretPassword" placeholder="Password" required class="mt-1 w-full rounded-xl border-slate-300 text-sm">
                         @error('secretPassword') <p class="mt-1 text-xs text-rose-600">{{ $message }}</p> @enderror
                     </div>
                     <div>

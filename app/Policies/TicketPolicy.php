@@ -11,6 +11,10 @@ class TicketPolicy
 {
     public function view(User $user, Ticket $ticket): bool
     {
+        if (!$user->is_active) {
+            return false;
+        }
+
         if ($user->role->isStaff()) {
             return true;
         }

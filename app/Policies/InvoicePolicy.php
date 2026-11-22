@@ -12,6 +12,10 @@ class InvoicePolicy
 {
     public function view(User $user, Invoice $invoice): bool
     {
+        if (!$user->is_active) {
+            return false;
+        }
+
         if ($user->hasRole(UserRole::SuperAdmin, UserRole::Finance, UserRole::Noc)) {
             return true;
         }
@@ -21,6 +25,10 @@ class InvoicePolicy
 
     public function pay(User $user, Invoice $invoice): bool
     {
+        if (!$user->is_active) {
+            return false;
+        }
+
         return $user->customer?->id === $invoice->customer_id;
     }
 }

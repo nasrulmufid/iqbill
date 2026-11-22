@@ -14,7 +14,7 @@
         <div class="text-sm font-medium text-slate-700">Sumopod Webhook Endpoint URL</div>
         <div class="mt-2 flex items-center gap-2">
             <input type="text" readonly value="{{ $webhookUrl }}" class="w-full rounded-xl border-slate-300 bg-slate-50 font-mono text-xs">
-            <button type="button" onclick="navigator.clipboard.writeText('{{ $webhookUrl }}'); window.dispatchEvent(new CustomEvent('notify-copy'));"
+            <button type="button" onclick="navigator.clipboard.writeText({{ \Illuminate\Support\Js::from($webhookUrl) }}); window.dispatchEvent(new CustomEvent('notify-copy'));"
                     class="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold hover:bg-slate-50">Copy</button>
         </div>
     </div>
@@ -97,6 +97,12 @@
                 <div>
                     <label class="block text-xs font-medium text-slate-700">Webhook Token (whtok_...)</label>
                     <input type="password" name="sumopod_webhook_token" placeholder="{{ $maskedWebhookToken ?: 'Empty' }}" class="mt-1 w-full rounded-xl border-slate-300 text-sm">
+                    @if($maskedWebhookToken !== '')
+                        <label class="mt-1.5 inline-flex items-center gap-1.5 text-xs text-slate-600">
+                            <input type="checkbox" name="clear_sumopod_webhook_token" value="1" class="rounded border-slate-300 text-rose-600">
+                            Clear stored webhook token
+                        </label>
+                    @endif
                 </div>
             </div>
         </div>

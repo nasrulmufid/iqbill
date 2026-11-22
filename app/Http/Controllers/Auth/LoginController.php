@@ -28,10 +28,15 @@ class LoginController extends Controller
 
         $loginInput = trim($validated['email']);
         $loginField = filter_var($loginInput, FILTER_VALIDATE_EMAIL) ? 'email' : 'username';
-        $throttleKey = Str::lower($loginInput) . '|' . $request->ip();
+        $ip = (string) $request->ip();
+        $throttleKey = Str::lower($loginInput) . '|' . $ip;
+        $ipThrottleKey = 'login-ip|' . $ip;
 
-        if (RateLimiter::tooManyAttempts($throttleKey, 5)) {
-            $seconds = RateLimiter::availableIn($throttleKey);
+        if (RateLimiter::tooManyAttempts($throttleKey, 5) || RateLimiter::tooManyAttempts($ipThrottleKey, 25)) {
+            $seconds = max(
+                RateLimiter::availableIn($throttleKey),
+                RateLimiter::availableIn($ipThrottleKey)
+            );
 
             return back()
                 ->withErrors(['email' => "Too many login attempts. Please try again in {$seconds} seconds."])
@@ -40,21 +45,26 @@ class LoginController extends Controller
 
         if (!Auth::attempt([$loginField => $loginInput, 'password' => $validated['password']], $request->boolean('remember'))) {
             RateLimiter::hit($throttleKey, 60);
+            RateLimiter::hit($ipThrottleKey, 60);
 
             return back()
                 ->withErrors(['email' => 'Invalid email/username or password.'])
                 ->onlyInput('email');
         }
 
-        RateLimiter::clear($throttleKey);
-        $request->session()->regenerate();
-
         $user = $request->user();
         if ($user && !$user->is_active) {
+            RateLimiter::hit($throttleKey, 60);
+            RateLimiter::hit($ipThrottleKey, 60);
             Auth::logout();
+            $request->session()->invalidate();
+            $request->session()->regenerateToken();
 
             return back()->withErrors(['email' => 'Your account is inactive.']);
         }
+
+        RateLimiter::clear($throttleKey);
+        $request->session()->regenerate();
 
         $user?->forceFill(['last_login_at' => now()])->save();
 

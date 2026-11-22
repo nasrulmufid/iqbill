@@ -32,7 +32,7 @@
             <div class="flex flex-wrap gap-2">
                 @foreach($placeholders as $var => $desc)
                     <button type="button"
-                            onclick="navigator.clipboard.writeText('{{ $var }}'); window.dispatchEvent(new CustomEvent('notify-copy'));"
+                            onclick="navigator.clipboard.writeText({{ \Illuminate\Support\Js::from($var) }}); window.dispatchEvent(new CustomEvent('notify-copy'));"
                             title="{{ $desc }}"
                             class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-50 px-2.5 py-1 text-xs font-mono font-semibold text-indigo-700 hover:bg-indigo-100">
                         <span>{{ $var }}</span>
@@ -111,12 +111,12 @@
 
     window.waRenderSamplePreview = function (rawText) {
         if (!rawText || !rawText.trim()) return '';
-        let text = rawText.replace(/\r\n?/g, '\n');
+        let text = rawText.replace(/\r\n?/g, '\n').replace(/\x1A/g, '');
 
         // Case-insensitive substitution for {placeholder} variables
         const lowerMap = {};
         Object.keys(window._waSampleVars || {}).forEach((k) => {
-            lowerMap[k.toLowerCase()] = window._waSampleVars[k];
+            lowerMap[k.toLowerCase()] = String(window._waSampleVars[k] ?? '').replace(/\x1A/g, '');
         });
         text = text.replace(/\{\s*([a-zA-Z0-9_]+)\s*\}/g, (full, name) => {
             const key = '{' + name.toLowerCase() + '}';
@@ -128,10 +128,10 @@
             .replace(/</g, '&lt;')
             .replace(/>/g, '&gt;');
 
-        const tokens = [];
+        const tokenMap = new Map();
         const stash = (html) => {
-            const key = '\x1ATOKEN' + tokens.length + '\x1A';
-            tokens.push([key, html]);
+            const key = '\x1ATOKEN' + tokenMap.size + '\x1A';
+            tokenMap.set(key, html);
             return key;
         };
 
@@ -142,8 +142,8 @@
             stash('<code class="rounded bg-black/5 px-1.5 py-0.5 font-mono text-[12px]">' + inner + '</code>')
         );
         escaped = escaped.replace(/https?:\/\/[^\s<]+/gi, (url) => {
-            const safeUrl = url.replace(/"/g, '&quot;');
-            return stash('<a href="' + safeUrl + '" target="_blank" rel="noopener" class="underline text-sky-700 break-all">' + url + '</a>');
+            const safeUrl = url.replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+            return stash('<a href="' + safeUrl + '" target="_blank" rel="noopener noreferrer" class="underline text-sky-700 break-all">' + url + '</a>');
         });
 
         escaped = escaped.replace(/(^|[\s("'\[~_>])\*([^\s*\n](?:[^*\n]*[^\s*\n])?)\*(?=$|[\s.,!?:;)"'\]~_<])/gm, '$1<strong class="font-bold">$2</strong>');
@@ -151,9 +151,7 @@
         escaped = escaped.replace(/(^|[\s("'\[*_>])~([^\s~\n](?:[^~\n]*[^\s~\n])?)~(?=$|[\s.,!?:;)"'\]*_<])/gm, '$1<del class="line-through text-slate-500">$2</del>');
         escaped = escaped.replace(/^&gt;\s?(.+)$/gm, '<span class="block border-l-2 border-emerald-600/50 pl-2.5 text-slate-600">$1</span>');
 
-        for (const [k, v] of tokens) {
-            escaped = escaped.split(k).join(v);
-        }
+        escaped = escaped.replace(/\x1ATOKEN\d+\x1A/g, (k) => tokenMap.get(k) ?? '');
 
         return escaped.replace(/\n/g, '<br>');
     };

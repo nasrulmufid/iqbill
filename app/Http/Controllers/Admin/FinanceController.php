@@ -64,11 +64,11 @@ class FinanceController extends Controller
         $rows = [['Paid Date', 'Payment Code', 'Invoice', 'Customer', 'Channel', 'Gross', 'Gateway Fee', 'Net']];
         foreach ($payments as $p) {
             $rows[] = [
-                $p->paid_at?->timezone('Asia/Jakarta')->format('Y-m-d H:i') ?? '-',
-                $p->payment_code,
-                $p->invoice->invoice_number ?? '-',
-                $p->invoice->customer->full_name ?? '-',
-                $p->gateway,
+                \App\Services\Billing\CustomerSpreadsheetService::neutralizeSpreadsheetCell($p->paid_at?->timezone('Asia/Jakarta')->format('Y-m-d H:i') ?? '-'),
+                \App\Services\Billing\CustomerSpreadsheetService::neutralizeSpreadsheetCell($p->payment_code),
+                \App\Services\Billing\CustomerSpreadsheetService::neutralizeSpreadsheetCell($p->invoice->invoice_number ?? '-'),
+                \App\Services\Billing\CustomerSpreadsheetService::neutralizeSpreadsheetCell($p->invoice->customer->full_name ?? '-'),
+                \App\Services\Billing\CustomerSpreadsheetService::neutralizeSpreadsheetCell($p->gateway),
                 (float) $p->amount,
                 (float) $p->gateway_fee,
                 (float) $p->net_amount,
