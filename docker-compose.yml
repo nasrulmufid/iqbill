@@ -204,7 +204,7 @@ services:
 
   gowa:
     # Pin to an explicit release tag (or immutable @sha256 digest via GOWA_IMAGE)
-    image: ${GOWA_IMAGE:-aldinokemal2104/go-whatsapp-web-multidevice:v6.10.0}
+    image: ${GOWA_IMAGE:-aldinokemal2104/go-whatsapp-web-multidevice:latest}
     container_name: iqbill_gowa
     restart: unless-stopped
     ports:
