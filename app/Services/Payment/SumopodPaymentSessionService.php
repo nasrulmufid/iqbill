@@ -64,7 +64,7 @@ class SumopodPaymentSessionService
                         'amount' => $amount,
                         'gateway_fee' => $fee,
                         'net_amount' => $netAmount,
-                        'qris_string' => (string) $response['payment_code'],
+                        'qris_string' => !empty($response['payment_code']) ? (string) $response['payment_code'] : null,
                         'payment_url' => (string) $response['payment_link_url'],
                         'qris_expires_at' => Carbon::parse((string) $response['expires_at'])->timezone('Asia/Jakarta'),
                         'status' => PaymentStatus::Pending,

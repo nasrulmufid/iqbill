@@ -21,9 +21,9 @@ class SumopodGatewayService
      *     amount: int|float,
      *     fee?: int|float,
      *     net_amount?: int|float,
-     *     currency: string,
-     *     payment_method_type_code: string,
-     *     payment_code: string,
+     *     currency?: string,
+     *     payment_method_type_code?: string,
+     *     payment_code?: string,
      *     payment_link_url: string,
      *     expires_at: string,
      *     status: string
@@ -38,7 +38,8 @@ class SumopodGatewayService
             throw new SumopodException('Sumopod API key is not configured.');
         }
 
-        $baseUrl = rtrim($settings->sumopodBaseUrl(), '/');
+        $endpoint = $settings->sumopodPaymentsEndpoint();
+        $returnUrl = route('public.pay', $invoice->public_token);
 
         try {
             $response = Http::timeout(10)
@@ -47,10 +48,13 @@ class SumopodGatewayService
                 ->withHeaders([
                     'X-Api-Key' => $apiKey,
                 ])
-                ->post("{$baseUrl}/payments", [
+                ->post($endpoint, [
                     'order_id' => $paymentCode,
                     'amount' => (int) round((float) $invoice->total_amount),
                     'currency' => 'IDR',
+                    'expires_in_hours' => 24,
+                    'success_return_url' => $returnUrl,
+                    'cancel_return_url' => $returnUrl,
                     'payment_method_type_code' => 'QRIS',
                 ]);
         } catch (ConnectionException $e) {
@@ -68,7 +72,6 @@ class SumopodGatewayService
         if (
             !is_array($data)
             || empty($data['payment_id'])
-            || empty($data['payment_code'])
             || empty($data['payment_link_url'])
             || empty($data['expires_at'])
         ) {

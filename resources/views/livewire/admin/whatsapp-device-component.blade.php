@@ -44,12 +44,13 @@
                 @error('waGatewayUrl') <p class="mt-1 text-xs text-rose-600">{{ $message }}</p> @enderror
             </div>
             <div>
-                <label class="block text-xs font-medium text-slate-700">Device ID (Optional for GOWA v8+)</label>
+                <label class="block text-xs font-medium text-slate-700">Device ID (Auto-registered on GOWA v8+)</label>
                 <input type="text"
                        wire:model="waDeviceId"
                        autocomplete="off"
-                       placeholder="default"
+                       placeholder="iqbill"
                        class="mt-1 w-full rounded-xl border-slate-300 text-sm">
+                <p class="mt-1 text-[11px] text-slate-500">IQ Bill automatically creates this device slot on GOWA v8+ if it does not exist yet.</p>
                 @error('waDeviceId') <p class="mt-1 text-xs text-rose-600">{{ $message }}</p> @enderror
             </div>
         </div>
@@ -99,10 +100,10 @@
                     @foreach($devices as $dev)
                         <div class="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-50 p-3.5 text-sm">
                             <div>
-                                <div class="font-semibold text-slate-900">{{ $dev['push_name'] ?? $dev['name'] ?? 'WhatsApp Device' }}</div>
-                                <div class="font-mono text-xs text-slate-500">{{ $dev['device_id'] ?? $dev['device'] ?? $dev['phone'] ?? '-' }}</div>
+                                <div class="font-semibold text-slate-900">{{ $dev['push_name'] ?? $dev['display_name'] ?? $dev['name'] ?? 'WhatsApp Device' }}</div>
+                                <div class="font-mono text-xs text-slate-500">{{ $dev['device_id'] ?? $dev['id'] ?? $dev['device'] ?? $dev['phone'] ?? '-' }}</div>
                             </div>
-                            <x-status-badge :status="$dev['status'] ?? 'connected'" />
+                            <x-status-badge :status="$dev['status'] ?? $dev['state'] ?? 'connected'" />
                         </div>
                     @endforeach
                 </div>

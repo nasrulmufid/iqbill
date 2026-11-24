@@ -5,6 +5,7 @@ declare(strict_types=1);
 use App\Enums\InvoiceStatus;
 use App\Enums\PaymentStatus;
 use App\Enums\SubscriptionStatus;
+use App\Enums\UserRole;
 use App\Jobs\MikrotikProvisioningJob;
 use App\Jobs\SendWhatsAppNotificationJob;
 use App\Models\CompanySetting;
@@ -15,6 +16,8 @@ use App\Models\Package;
 use App\Models\Payment;
 use App\Models\PaymentWebhookLog;
 use App\Models\Subscription;
+use App\Models\User;
+use App\Services\Payment\SumopodPaymentSessionService;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Queue;
 use Illuminate\Support\Str;
@@ -357,4 +360,116 @@ test('6. Webhook rejects amount mismatch with 422', function () {
 
     $response->assertStatus(422)->assertJson(['received' => false, 'error' => 'amount_mismatch']);
     expect($invoice->fresh()->status)->toBe(InvoiceStatus::Unpaid);
+});
+
+test('7. Admin can configure Sandbox and Live Sumopod Base URLs and requests target configured URL cleanly', function () {
+    $ctx = seedBillingContext();
+    $invoice = $ctx['invoice'];
+    $admin = User::factory()->create(['role' => UserRole::SuperAdmin, 'is_active' => true]);
+
+    $this->actingAs($admin)
+        ->get(route('admin.settings.payment.edit'))
+        ->assertOk()
+        ->assertSee('name="sumopod_sandbox_base_url"', false)
+        ->assertSee('name="sumopod_live_base_url"', false)
+        ->assertSee(CompanySetting::DEFAULT_SUMOPOD_SANDBOX_BASE_URL)
+        ->assertSee(CompanySetting::DEFAULT_SUMOPOD_LIVE_BASE_URL);
+
+    // Configure Sandbox URL (without /payments suffix) and Live URL (with /payments suffix)
+    $this->actingAs($admin)->put(route('admin.settings.payment.update'), [
+        'company_name' => 'IQ Bill ISP',
+        'sumopod_environment' => 'live',
+        'sumopod_sandbox_base_url' => 'https://custom-sandbox.sumopod.test/api/v1/',
+        'sumopod_live_base_url' => 'https://custom-live.sumopod.test/api/v1/payments/',
+        'sumopod_webhook_verification_mode' => 'auto',
+        'sumopod_fee_bearer' => 'merchant',
+        'default_due_days' => 7,
+        'grace_period_days' => 3,
+    ])->assertRedirect();
+
+    $settings = CompanySetting::current()->fresh();
+    expect($settings->sumopodSandboxBaseUrl())->toBe('https://custom-sandbox.sumopod.test/api/v1')
+        ->and($settings->sumopodLiveBaseUrl())->toBe('https://custom-live.sumopod.test/api/v1/payments')
+        ->and($settings->sumopodPaymentsEndpoint())->toBe('https://custom-live.sumopod.test/api/v1/payments');
+
+    Http::fake([
+        'https://custom-live.sumopod.test/api/v1/payments' => Http::response([
+            'payment_id' => 'pay_live_01',
+            'order_id' => 'PAY-202611-000123-01',
+            'amount' => 150000,
+            'fee' => 1350,
+            'net_amount' => 148650,
+            'payment_link_url' => 'https://pay.sumopod.com/p/pay_live_01',
+            'status' => 'pending',
+            'expires_at' => now()->addHours(24)->toIso8601String(),
+        ], 200),
+        'https://custom-sandbox.sumopod.test/api/v1/payments' => Http::response([
+            'payment_id' => 'pay_sbx_02',
+            'order_id' => 'PAY-202611-000123-02',
+            'amount' => 150000,
+            'fee' => 1350,
+            'net_amount' => 148650,
+            'payment_link_url' => 'https://pay.sumopod.com/p/pay_sbx_02',
+            'status' => 'pending',
+            'expires_at' => now()->addHours(24)->toIso8601String(),
+        ], 200),
+    ]);
+
+    $expectedReturnUrl = route('public.pay', $invoice->public_token);
+
+    // 1. Live mode targets exact configured /payments URL and omits payment_code safely
+    $livePayment = app(SumopodPaymentSessionService::class)->getOrCreateActiveSession($invoice);
+    expect($livePayment->external_reference)->toBe('pay_live_01')
+        ->and($livePayment->qris_string)->toBeNull()
+        ->and($livePayment->payment_url)->toBe('https://pay.sumopod.com/p/pay_live_01');
+
+    Http::assertSent(function ($request) use ($expectedReturnUrl) {
+        return $request->url() === 'https://custom-live.sumopod.test/api/v1/payments'
+            && $request['currency'] === 'IDR'
+            && $request['expires_in_hours'] === 24
+            && $request['success_return_url'] === $expectedReturnUrl
+            && $request['cancel_return_url'] === $expectedReturnUrl
+            && $request['payment_method_type_code'] === 'QRIS';
+    });
+
+    // Expire previous payment, switch to sandbox (/api/v1 without /payments), and verify auto-appended /payments
+    $livePayment->update(['status' => PaymentStatus::Expired]);
+    $settings->update(['sumopod_environment' => 'sandbox']);
+
+    $sandboxPayment = app(SumopodPaymentSessionService::class)->getOrCreateActiveSession($invoice->fresh());
+    expect($sandboxPayment->external_reference)->toBe('pay_sbx_02')
+        ->and($sandboxPayment->payment_url)->toBe('https://pay.sumopod.com/p/pay_sbx_02');
+
+    Http::assertSent(fn ($req) => $req->url() === 'https://custom-sandbox.sumopod.test/api/v1/payments');
+});
+
+test('8. Webhook accepts Sumopod payment.test event without payment identifiers', function () {
+    $ctx = seedBillingContext();
+
+    $rawBody = json_encode([
+        'event_type' => 'payment.test',
+        'data' => [
+            'message' => 'Webhook connection test from Sumopod Settings',
+        ],
+    ], JSON_THROW_ON_ERROR);
+
+    $headers = buildSvixHeaders('msg_test_ping_01', time(), $rawBody, $ctx['rawSecret']);
+
+    $response = $this->call(
+        'POST',
+        '/api/webhooks/sumopod',
+        [],
+        [],
+        [],
+        collect($headers)->mapWithKeys(fn ($v, $k) => ['HTTP_' . strtoupper(str_replace('-', '_', $k)) => $v])->all()
+            + ['CONTENT_TYPE' => 'application/json'],
+        $rawBody
+    );
+
+    $response->assertOk()->assertJson(['received' => true, 'status' => 'test_ok']);
+
+    $log = PaymentWebhookLog::query()->where('svix_id', 'msg_test_ping_01')->first();
+    expect($log)->not->toBeNull()
+        ->and($log->event_type)->toBe('payment.test')
+        ->and($log->processing_status)->toBe('processed');
 });

@@ -58,14 +58,44 @@
         </div>
 
         {{-- Sumopod --}}
-        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4">
-            <h3 class="font-bold text-slate-900">Sumopod Managed Payment</h3>
+        <div class="bg-white rounded-2xl border border-slate-200 p-6 shadow-sm space-y-4"
+             x-data="{
+                env: @js(old('sumopod_environment', $settings->sumopod_environment ?: 'sandbox')),
+                sandboxUrl: @js(old('sumopod_sandbox_base_url', $settings->sumopodSandboxBaseUrl())),
+                liveUrl: @js(old('sumopod_live_base_url', $settings->sumopodLiveBaseUrl())),
+                defaultSandboxUrl: @js(\App\Models\CompanySetting::DEFAULT_SUMOPOD_SANDBOX_BASE_URL),
+                defaultLiveUrl: @js(\App\Models\CompanySetting::DEFAULT_SUMOPOD_LIVE_BASE_URL),
+                resolvedEndpoint() {
+                    const raw = (this.env === 'live' ? this.liveUrl : this.sandboxUrl) || '';
+                    const trimmed = raw.trim().replace(/\/+$/, '');
+                    if (!trimmed) return '-';
+                    return /\/payments$/i.test(trimmed) ? trimmed : (trimmed + '/payments');
+                },
+                resetDefaults() {
+                    this.sandboxUrl = this.defaultSandboxUrl;
+                    this.liveUrl = this.defaultLiveUrl;
+                }
+             }">
+            <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div>
+                    <h3 class="font-bold text-slate-900">Sumopod Managed Payment</h3>
+                    <p class="text-xs text-slate-500 mt-0.5">
+                        Configure Sandbox and Live Create Payment endpoints according to the Sumopod Payment Gateway API.
+                    </p>
+                </div>
+                <button type="button"
+                        @click="resetDefaults()"
+                        class="self-start sm:self-auto rounded-lg border border-slate-200 bg-slate-50 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-100 transition">
+                    Reset Default URLs
+                </button>
+            </div>
+
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                     <label class="block text-sm font-medium text-slate-700">Environment</label>
-                    <select name="sumopod_environment" class="mt-1 w-full rounded-xl border-slate-300 text-sm">
-                        <option value="sandbox" @selected($settings->sumopod_environment === 'sandbox')>Sandbox</option>
-                        <option value="live" @selected($settings->sumopod_environment === 'live')>Live</option>
+                    <select name="sumopod_environment" x-model="env" class="mt-1 w-full rounded-xl border-slate-300 text-sm">
+                        <option value="sandbox" @selected(old('sumopod_environment', $settings->sumopod_environment) === 'sandbox')>Sandbox</option>
+                        <option value="live" @selected(old('sumopod_environment', $settings->sumopod_environment) === 'live')>Live</option>
                     </select>
                 </div>
                 <div>
@@ -83,6 +113,43 @@
                         <option value="customer" @selected($settings->sumopod_fee_bearer === 'customer')>Customer</option>
                     </select>
                 </div>
+            </div>
+
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                    <label for="sumopod-sandbox-base-url" class="block text-xs font-medium text-slate-700">Sandbox Base URL</label>
+                    <input id="sumopod-sandbox-base-url"
+                           type="url"
+                           name="sumopod_sandbox_base_url"
+                           x-model="sandboxUrl"
+                           value="{{ old('sumopod_sandbox_base_url', $settings->sumopodSandboxBaseUrl()) }}"
+                           placeholder="{{ \App\Models\CompanySetting::DEFAULT_SUMOPOD_SANDBOX_BASE_URL }}"
+                           class="mt-1 w-full rounded-xl border-slate-300 text-sm font-mono @error('sumopod_sandbox_base_url') border-rose-500 @enderror">
+                    @error('sumopod_sandbox_base_url')
+                        <p class="mt-1 text-xs text-rose-600">{{ $message }}</p>
+                    @enderror
+                </div>
+                <div>
+                    <label for="sumopod-live-base-url" class="block text-xs font-medium text-slate-700">Live Base URL</label>
+                    <input id="sumopod-live-base-url"
+                           type="url"
+                           name="sumopod_live_base_url"
+                           x-model="liveUrl"
+                           value="{{ old('sumopod_live_base_url', $settings->sumopodLiveBaseUrl()) }}"
+                           placeholder="{{ \App\Models\CompanySetting::DEFAULT_SUMOPOD_LIVE_BASE_URL }}"
+                           class="mt-1 w-full rounded-xl border-slate-300 text-sm font-mono @error('sumopod_live_base_url') border-rose-500 @enderror">
+                    @error('sumopod_live_base_url')
+                        <p class="mt-1 text-xs text-rose-600">{{ $message }}</p>
+                    @enderror
+                </div>
+            </div>
+
+            <div class="rounded-xl border border-slate-200/80 bg-slate-50 px-3.5 py-2.5 text-xs text-slate-600 flex flex-wrap items-center justify-between gap-2">
+                <span>
+                    Active Endpoint (<span class="font-semibold uppercase" x-text="env"></span>):
+                    <code class="font-mono font-semibold text-indigo-700 break-all" x-text="resolvedEndpoint()"></code>
+                </span>
+                <span class="text-[11px] text-slate-400">Accepts <code class="font-mono">/api/v1</code> or full <code class="font-mono">/api/v1/payments</code></span>
             </div>
 
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">

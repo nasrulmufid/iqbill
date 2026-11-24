@@ -270,3 +270,144 @@ test('NotificationTemplate::defaults preserves Indonesian WhatsApp customer mess
         ->and($defaults->get('service_isolated')['body_template'])->toContain('terisolir')
         ->and($defaults->get('payment_receipt')['body_template'])->toContain('Terima kasih {customer_name}!');
 });
+
+test('GowaClient auto-registers missing device_id on GOWA v8+ when /app/devices returns 404', function () {
+    CompanySetting::current()->update([
+        'wa_gateway_url' => 'http://gowa:3000',
+        'wa_basic_auth_user' => 'iqbill',
+        'wa_basic_auth_password_encrypted' => 'secret',
+        'wa_device_id' => 'iqbill',
+    ]);
+
+    $created = false;
+    Http::fake(function ($request) use (&$created) {
+        if ($request->url() === 'http://gowa:3000/app/devices') {
+            return Http::response(['code' => 'DEVICE_NOT_FOUND'], 404);
+        }
+
+        if ($request->url() === 'http://gowa:3000/devices' && $request->method() === 'GET') {
+            expect($request->hasHeader('X-Device-Id'))->toBeFalse();
+
+            return Http::response([
+                'code' => 200,
+                'results' => $created ? [['id' => 'iqbill', 'state' => 'disconnected']] : [],
+            ], 200);
+        }
+
+        if ($request->url() === 'http://gowa:3000/devices' && $request->method() === 'POST') {
+            expect($request['device_id'])->toBe('iqbill');
+            $created = true;
+
+            return Http::response([
+                'code' => 'SUCCESS',
+                'results' => ['device_id' => 'iqbill'],
+            ], 201);
+        }
+
+        return Http::response([], 500);
+    });
+
+    $res = app(GowaClient::class)->getDevices();
+
+    expect($created)->toBeTrue()
+        ->and($res['ok'])->toBeTrue()
+        ->and($res['error'])->toBeNull()
+        ->and($res['devices'])->toHaveCount(1)
+        ->and($res['devices'][0]['device_id'])->toBe('iqbill')
+        ->and($res['devices'][0]['status'])->toBe('disconnected');
+});
+
+test('GowaClient::getLoginQr auto-registers device and falls back to /devices/{id}/login with loopback qr_link rewrite', function () {
+    CompanySetting::current()->update([
+        'wa_gateway_url' => 'http://gowa:3000',
+        'wa_basic_auth_user' => 'iqbill',
+        'wa_basic_auth_password_encrypted' => 'secret',
+        'wa_device_id' => 'iqbill',
+    ]);
+
+    $created = false;
+    Http::fake(function ($request) use (&$created) {
+        if ($request->url() === 'http://gowa:3000/app/login') {
+            return Http::response(['code' => 'NOT_FOUND'], 404);
+        }
+
+        if ($request->url() === 'http://gowa:3000/devices' && $request->method() === 'GET') {
+            return Http::response([
+                'code' => 200,
+                'results' => $created ? [['id' => 'iqbill', 'state' => 'disconnected']] : [],
+            ], 200);
+        }
+
+        if ($request->url() === 'http://gowa:3000/devices' && $request->method() === 'POST') {
+            $created = true;
+
+            return Http::response(['code' => 'SUCCESS', 'results' => ['device_id' => 'iqbill']], 201);
+        }
+
+        if ($request->url() === 'http://gowa:3000/devices/iqbill/login' && $request->method() === 'GET') {
+            return Http::response([
+                'results' => [
+                    'qr_link' => 'http://localhost:3000/statics/qr-v8.png',
+                    'qr_duration' => 35,
+                ],
+            ], 200);
+        }
+
+        if ($request->url() === 'http://gowa:3000/statics/qr-v8.png') {
+            return Http::response('png-v8', 200, ['Content-Type' => 'image/png']);
+        }
+
+        return Http::response([], 500);
+    });
+
+    $qr = app(GowaClient::class)->getLoginQr();
+
+    expect($created)->toBeTrue()
+        ->and($qr['ok'])->toBeTrue()
+        ->and($qr['qr_duration'])->toBe(35)
+        ->and($qr['qr_data_uri'])->toBe('data:image/png;base64,' . base64_encode('png-v8'));
+});
+
+test('GowaClient falls back to GOWA v8 /devices/{id} endpoints for loginWithCode, reconnect, and logout', function () {
+    CompanySetting::current()->update([
+        'wa_gateway_url' => 'http://gowa:3000',
+        'wa_basic_auth_user' => 'iqbill',
+        'wa_basic_auth_password_encrypted' => 'secret',
+        'wa_device_id' => 'iqbill',
+    ]);
+
+    Http::fake([
+        'http://gowa:3000/app/login-with-code*' => Http::response(['code' => 'NOT_FOUND'], 404),
+        'http://gowa:3000/devices' => Http::response(['results' => [['id' => 'iqbill', 'status' => 'disconnected']]], 200),
+        'http://gowa:3000/devices/iqbill/login/code' => Http::response([
+            'code' => 'SUCCESS',
+            'message' => 'Pairing code generated',
+            'results' => ['pair_code' => 'ABCD-1234'],
+        ], 200),
+        'http://gowa:3000/app/reconnect' => Http::response(['code' => 'NOT_FOUND'], 404),
+        'http://gowa:3000/devices/iqbill/reconnect' => Http::response(['message' => 'Reconnected'], 200),
+        'http://gowa:3000/app/logout' => Http::response(['code' => 'NOT_FOUND'], 404),
+        'http://gowa:3000/devices/iqbill/logout' => Http::response(['message' => 'Logged out'], 200),
+    ]);
+
+    $client = app(GowaClient::class);
+
+    $pair = $client->loginWithCode('+62 812-3456-7890');
+    expect($pair['ok'])->toBeTrue()
+        ->and($pair['code'])->toBe('ABCD-1234')
+        ->and($pair['message'])->toBe('Pairing code generated');
+
+    $reconn = $client->reconnect();
+    expect($reconn['ok'])->toBeTrue()->and($reconn['message'])->toBe('Reconnected');
+
+    $logout = $client->logout();
+    expect($logout['ok'])->toBeTrue()->and($logout['message'])->toBe('Logged out');
+
+    Http::assertSent(fn ($req) => $req->method() === 'POST'
+        && $req->url() === 'http://gowa:3000/devices/iqbill/login/code'
+        && $req['phone'] === '6281234567890');
+    Http::assertSent(fn ($req) => $req->method() === 'POST'
+        && $req->url() === 'http://gowa:3000/devices/iqbill/reconnect');
+    Http::assertSent(fn ($req) => $req->method() === 'POST'
+        && $req->url() === 'http://gowa:3000/devices/iqbill/logout');
+});

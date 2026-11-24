@@ -21,6 +21,8 @@ class CompanySettingSeeder extends Seeder
             'grace_period_days' => 3,
             'pregenerate_qris_on_invoice' => true,
             'sumopod_environment' => env('SUMOPOD_ENVIRONMENT', 'sandbox'),
+            'sumopod_sandbox_base_url' => env('SUMOPOD_SANDBOX_BASE_URL', CompanySetting::DEFAULT_SUMOPOD_SANDBOX_BASE_URL),
+            'sumopod_live_base_url' => env('SUMOPOD_LIVE_BASE_URL', CompanySetting::DEFAULT_SUMOPOD_LIVE_BASE_URL),
             'sumopod_webhook_verification_mode' => 'auto',
             'sumopod_fee_bearer' => 'merchant',
         ];

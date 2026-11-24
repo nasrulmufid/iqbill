@@ -8,6 +8,10 @@ use Illuminate\Database\Eloquent\Model;
 
 class CompanySetting extends Model
 {
+    public const DEFAULT_SUMOPOD_SANDBOX_BASE_URL = 'https://api-pay-sandbox.sumopod.com/api/v1/payments';
+
+    public const DEFAULT_SUMOPOD_LIVE_BASE_URL = 'https://api-pay.sumopod.com/api/v1/payments';
+
     protected $fillable = [
         'company_name',
         'company_address',
@@ -19,6 +23,8 @@ class CompanySetting extends Model
         'pregenerate_qris_on_invoice',
         'usage_tracking_enabled',
         'sumopod_environment',
+        'sumopod_sandbox_base_url',
+        'sumopod_live_base_url',
         'sumopod_api_key_encrypted',
         'sumopod_webhook_verification_mode',
         'sumopod_signing_secret_encrypted',
@@ -77,6 +83,8 @@ class CompanySetting extends Model
             'grace_period_days' => 3,
             'pregenerate_qris_on_invoice' => true,
             'sumopod_environment' => 'sandbox',
+            'sumopod_sandbox_base_url' => self::DEFAULT_SUMOPOD_SANDBOX_BASE_URL,
+            'sumopod_live_base_url' => self::DEFAULT_SUMOPOD_LIVE_BASE_URL,
             'sumopod_webhook_verification_mode' => 'auto',
             'sumopod_fee_bearer' => 'merchant',
         ];
@@ -102,10 +110,33 @@ class CompanySetting extends Model
         return static::query()->firstOrCreate(['id' => 1], $defaults);
     }
 
+    public function sumopodSandboxBaseUrl(): string
+    {
+        $configured = rtrim(trim((string) ($this->sumopod_sandbox_base_url ?? '')), '/');
+
+        return $configured !== '' ? $configured : self::DEFAULT_SUMOPOD_SANDBOX_BASE_URL;
+    }
+
+    public function sumopodLiveBaseUrl(): string
+    {
+        $configured = rtrim(trim((string) ($this->sumopod_live_base_url ?? '')), '/');
+
+        return $configured !== '' ? $configured : self::DEFAULT_SUMOPOD_LIVE_BASE_URL;
+    }
+
     public function sumopodBaseUrl(): string
     {
         return $this->sumopod_environment === 'live'
-            ? 'https://api-pay.sumopod.com/api/v1'
-            : 'https://api-pay-sandbox.sumopod.com/api/v1';
+            ? $this->sumopodLiveBaseUrl()
+            : $this->sumopodSandboxBaseUrl();
+    }
+
+    public function sumopodPaymentsEndpoint(): string
+    {
+        $url = rtrim($this->sumopodBaseUrl(), '/');
+
+        return preg_match('#/payments$#i', $url) === 1
+            ? $url
+            : "{$url}/payments";
     }
 }

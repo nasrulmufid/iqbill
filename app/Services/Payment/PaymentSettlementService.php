@@ -38,6 +38,25 @@ class PaymentSettlementService
             ];
         }
 
+        if ($eventType === 'payment.test') {
+            $this->recordLog(
+                $request,
+                $svixId,
+                $externalRef,
+                $orderId,
+                $eventType,
+                $verificationMethod,
+                200,
+                'processed',
+                $payload
+            );
+
+            return [
+                'http_status' => 200,
+                'body' => ['received' => true, 'status' => 'test_ok'],
+            ];
+        }
+
         if ($eventType === '' || ($externalRef === null && $orderId === null)) {
             $this->recordLog(
                 $request,

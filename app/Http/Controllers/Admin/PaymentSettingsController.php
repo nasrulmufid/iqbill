@@ -36,6 +36,8 @@ class PaymentSettingsController extends Controller
         $validated = $request->validate([
             'company_name' => ['required', 'string', 'max:150'],
             'sumopod_environment' => ['required', 'in:sandbox,live'],
+            'sumopod_sandbox_base_url' => ['nullable', 'url', 'max:255'],
+            'sumopod_live_base_url' => ['nullable', 'url', 'max:255'],
             'sumopod_webhook_verification_mode' => ['required', 'in:auto,signature,token'],
             'sumopod_fee_bearer' => ['required', 'in:merchant,customer'],
             'default_due_days' => ['required', 'integer', 'min:1', 'max:30'],
@@ -65,6 +67,19 @@ class PaymentSettingsController extends Controller
             'telegram_notify_error' => $request->boolean('telegram_notify_error'),
         ];
 
+        if ($request->has('sumopod_sandbox_base_url')) {
+            $sandboxUrl = rtrim(trim((string) ($validated['sumopod_sandbox_base_url'] ?? '')), '/');
+            $updates['sumopod_sandbox_base_url'] = $sandboxUrl !== ''
+                ? $sandboxUrl
+                : CompanySetting::DEFAULT_SUMOPOD_SANDBOX_BASE_URL;
+        }
+        if ($request->has('sumopod_live_base_url')) {
+            $liveUrl = rtrim(trim((string) ($validated['sumopod_live_base_url'] ?? '')), '/');
+            $updates['sumopod_live_base_url'] = $liveUrl !== ''
+                ? $liveUrl
+                : CompanySetting::DEFAULT_SUMOPOD_LIVE_BASE_URL;
+        }
+
         if (!empty($validated['sumopod_api_key'])) {
             $updates['sumopod_api_key_encrypted'] = $validated['sumopod_api_key'];
         }
@@ -92,7 +107,9 @@ class PaymentSettingsController extends Controller
 
         return response()->json([
             'environment' => $settings->sumopod_environment,
-            'base_url' => $settings->sumopodBaseUrl(),
+            'base_url' => $settings->sumopodPaymentsEndpoint(),
+            'sandbox_base_url' => $settings->sumopodSandboxBaseUrl(),
+            'live_base_url' => $settings->sumopodLiveBaseUrl(),
             'api_key_configured' => !empty($settings->sumopod_api_key_encrypted),
             'signing_secret_configured' => !empty($settings->sumopod_signing_secret_encrypted),
             'webhook_token_configured' => !empty($settings->sumopod_webhook_token_encrypted),
