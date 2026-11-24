@@ -8,6 +8,7 @@ use App\Enums\SubscriptionStatus;
 use App\Enums\UserRole;
 use App\Http\Controllers\Controller;
 use App\Jobs\SendWhatsAppNotificationJob;
+use App\Models\AuditLog;
 use App\Models\CompanySetting;
 use App\Models\Customer;
 use App\Models\MikrotikRouter;
@@ -18,9 +19,11 @@ use App\Models\User;
 use App\Services\Billing\CustomerOnboardingService;
 use App\Services\Billing\CustomerSpreadsheetService;
 use App\Services\Billing\InvoiceService;
+use App\Services\Billing\ManualActivePeriodService;
 use App\Services\Billing\ManualCashExtensionService;
 use App\Services\Mikrotik\MikrotikProvisioningService;
 use App\Services\Mikrotik\MikrotikReconciliationService;
+use Carbon\CarbonImmutable;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Request;
@@ -349,6 +352,9 @@ class OperationsController extends Controller
         return view('admin.operations.customers', [
             'customers' => $customers,
             'search' => $search,
+            'activeSubscriptionsCount' => Subscription::query()
+                ->where('status', SubscriptionStatus::Active->value)
+                ->count(),
             'packages' => Package::query()->with('routers:id,name')->where('is_active', true)->orderBy('price')->get(),
             'routers' => MikrotikRouter::query()->where('is_active', true)->orderBy('name')->get(),
             'googleMapsApiKey' => CompanySetting::current()->google_maps_api_key_encrypted,
@@ -425,16 +431,34 @@ class OperationsController extends Controller
             'tickets' => fn ($q) => $q->latest('id'),
         ]);
 
+        $subscriptionIds = $customer->subscriptions->pluck('id');
+
         $usageBySub = PppoeUsageLog::query()
-            ->whereIn('subscription_id', $customer->subscriptions->pluck('id'))
+            ->whereIn('subscription_id', $subscriptionIds)
             ->selectRaw('subscription_id, SUM(rx_bytes_delta) as total_rx, SUM(tx_bytes_delta) as total_tx')
             ->groupBy('subscription_id')
             ->get()
             ->keyBy('subscription_id');
 
+        $activePeriodLogs = $subscriptionIds->isEmpty()
+            ? collect()
+            : AuditLog::query()
+                ->with('user:id,name')
+                ->where('auditable_type', Subscription::class)
+                ->whereIn('auditable_id', $subscriptionIds)
+                ->whereIn('action', [
+                    ManualActivePeriodService::AUDIT_ACTION,
+                    ManualActivePeriodService::BULK_AUDIT_ACTION,
+                ])
+                ->latest('created_at')
+                ->limit(10)
+                ->get();
+
         return view('admin.operations.customer-show', [
             'customer' => $customer,
             'usageBySub' => $usageBySub,
+            'activePeriodLogs' => $activePeriodLogs,
+            'todayWib' => now('Asia/Jakarta')->toDateString(),
             'packages' => Package::query()->with('routers:id,name')->where('is_active', true)->orderBy('price')->get(),
             'routers' => MikrotikRouter::query()->where('is_active', true)->orderBy('name')->get(),
         ]);
@@ -911,5 +935,93 @@ class OperationsController extends Controller
             'success',
             "Cash payment recorded ({$result['payment']->payment_code}). Active period extended until {$subscription->fresh()->next_billing_date->format('d M Y')}."
         );
+    }
+
+    public function updateActivePeriod(
+        Request $request,
+        Subscription $subscription,
+        ManualActivePeriodService $activePeriodService
+    ): RedirectResponse {
+        $data = $request->validate([
+            'next_billing_date' => ['required', 'date_format:Y-m-d'],
+            'reason' => ['nullable', 'string', 'max:500'],
+        ], [
+            'next_billing_date.required' => 'Please select a new active period date.',
+            'next_billing_date.date_format' => 'Active period date must be a valid calendar date (YYYY-MM-DD).',
+        ]);
+
+        $result = $activePeriodService->updateActivePeriod(
+            subscription: $subscription,
+            nextBillingDate: $data['next_billing_date'],
+            actor: $request->user(),
+            ipAddress: $request->ip(),
+            reason: $data['reason'] ?? null
+        );
+
+        $formattedOld = CarbonImmutable::createFromFormat('!Y-m-d', $result['old_date'], 'Asia/Jakarta')->format('d M Y');
+        $formattedNew = CarbonImmutable::createFromFormat('!Y-m-d', $result['new_date'], 'Asia/Jakarta')->format('d M Y');
+
+        if (!$result['changed']) {
+            return back()->with('success', "Active period for {$subscription->service_username} is already set to {$formattedNew}.");
+        }
+
+        $delta = $result['delta_days'];
+        $deltaLabel = match (true) {
+            $delta > 0 => "(+{$delta} " . ($delta === 1 ? 'day' : 'days') . ')',
+            $delta < 0 => "({$delta} " . ($delta === -1 ? 'day' : 'days') . ')',
+            default => '(date unchanged)',
+        };
+
+        $message = "Active period for {$subscription->service_username} updated from {$formattedOld} to {$formattedNew} {$deltaLabel}.";
+
+        if ($result['auto_restored']) {
+            $message .= ' Isolated service automatically restored to Active and queued for MikroTik restoration.';
+        }
+
+        return back()->with('success', $message);
+    }
+
+    public function bulkUpdateActivePeriod(
+        Request $request,
+        ManualActivePeriodService $activePeriodService
+    ): RedirectResponse {
+        $data = $request->validate([
+            'target_scope' => ['required', 'in:selected,all_active'],
+            'customer_ids' => ['required_if:target_scope,selected', 'array'],
+            'customer_ids.*' => ['integer', 'exists:customers,id'],
+            'operation' => ['required', 'in:add,subtract'],
+            'days' => ['required', 'integer', 'min:1', 'max:365'],
+            'reason' => ['nullable', 'string', 'max:500'],
+        ], [
+            'customer_ids.required_if' => 'Please select at least one customer or switch target to All Active Customers.',
+            'days.min' => 'Adjustment must be at least 1 day.',
+            'days.max' => 'Adjustment cannot exceed 365 days in a single bulk action.',
+        ]);
+
+        $days = (int) $data['days'];
+        $deltaDays = $data['operation'] === 'add' ? $days : -$days;
+
+        $result = $activePeriodService->bulkAdjustActivePeriod(
+            targetScope: $data['target_scope'],
+            customerIds: $data['target_scope'] === 'selected' ? ($data['customer_ids'] ?? []) : [],
+            deltaDays: $deltaDays,
+            actor: $request->user(),
+            ipAddress: $request->ip(),
+            reason: $data['reason'] ?? null
+        );
+
+        if ($result['updated_count'] === 0) {
+            return back()->with('error', 'No active subscriptions were updated. Bulk active period adjustment only applies to customers with Active status.');
+        }
+
+        $actionVerb = $deltaDays > 0 ? 'extended' : 'reduced';
+        $dayWord = $days === 1 ? 'day' : 'days';
+        $message = "Bulk active period {$actionVerb} by {$days} {$dayWord} for {$result['updated_count']} active subscription(s).";
+
+        if ($result['skipped_customer_count'] > 0) {
+            $message .= " ({$result['skipped_customer_count']} non-active customer(s) skipped.)";
+        }
+
+        return back()->with('success', $message);
     }
 }

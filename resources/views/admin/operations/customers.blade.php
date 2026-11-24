@@ -1,19 +1,42 @@
 @extends('layouts.app', ['title' => 'Customers List'])
 
+@php
+    $isBulkActivePeriodError = $errors->any() && old('form_context') === 'bulk_active_period';
+    $isAddCustomerError = $errors->any() && !$isBulkActivePeriodError;
+
+    $activePageIds = $customers
+        ->filter(fn ($cust) => $cust->subscriptions->contains(fn ($sub) => $sub->status === \App\Enums\SubscriptionStatus::Active))
+        ->pluck('id')
+        ->map(fn ($id) => (string) $id)
+        ->values()
+        ->all();
+
+    $initialSelectedIds = $isBulkActivePeriodError
+        ? array_values(array_map('strval', (array) old('customer_ids', [])))
+        : [];
+@endphp
+
 @section('content')
 <div id="customers-page-root" class="space-y-6"
      x-data="{
-        addOpen: {{ $errors->any() ? 'true' : 'false' }},
+        addOpen: {{ $isAddCustomerError ? 'true' : 'false' }},
         importOpen: false,
         editing: null,
-        selectedIds: [],
+        bulkActivePeriodOpen: {{ $isBulkActivePeriodError ? 'true' : 'false' }},
+        bulkScope: @js($isBulkActivePeriodError ? old('target_scope', 'selected') : 'selected'),
+        bulkOperation: @js($isBulkActivePeriodError ? old('operation', 'add') : 'add'),
+        bulkDays: @js($isBulkActivePeriodError ? (string) old('days', '7') : '7'),
+        bulkReason: @js($isBulkActivePeriodError ? (string) old('reason', '') : ''),
+        activeSubscriptionsTotal: {{ (int) $activeSubscriptionsCount }},
+        selectedIds: @js($initialSelectedIds),
         pageIds: @js($customers->pluck('id')->map(fn ($id) => (string) $id)->values()->all()),
-        customerCode: @js(old('customer_code', '')),
-        portalUsername: @js(old('portal_username', '')),
-        phoneWhatsapp: @js(\App\Models\Customer::normalizeWhatsappPhone(old('phone_whatsapp', ''))),
-        lat: @js(old('latitude', '')),
-        lng: @js(old('longitude', '')),
-        address: @js(old('installation_address', '')),
+        activePageIds: @js($activePageIds),
+        customerCode: @js($isAddCustomerError ? old('customer_code', '') : ''),
+        portalUsername: @js($isAddCustomerError ? old('portal_username', '') : ''),
+        phoneWhatsapp: @js($isAddCustomerError ? \App\Models\Customer::normalizeWhatsappPhone(old('phone_whatsapp', '')) : ''),
+        lat: @js($isAddCustomerError ? old('latitude', '') : ''),
+        lng: @js($isAddCustomerError ? old('longitude', '') : ''),
+        address: @js($isAddCustomerError ? old('installation_address', '') : ''),
         mapStatus: '',
         normalizeWa(raw, finalize = false) {
             let digits = String(raw || '').replace(/\D+/g, '');
@@ -32,8 +55,8 @@
             }
             return digits;
         },
-        selectedPackageId: @js((string) old('package_id', '')),
-        selectedRouterId: @js((string) old('mikrotik_router_id', '')),
+        selectedPackageId: @js($isAddCustomerError ? (string) old('package_id', '') : ''),
+        selectedRouterId: @js($isAddCustomerError ? (string) old('mikrotik_router_id', '') : ''),
         packageRoutersMap: @js($packages->mapWithKeys(fn ($p) => [(string) $p->id => $p->routers->pluck('id')->map(fn ($id) => (string) $id)->values()->all()])->all()),
         allRouters: @js($routers->map(fn ($r) => ['id' => (string) $r->id, 'name' => $r->name, 'ros' => strtoupper($r->ros_version_type)])->values()->all()),
         filteredRouters() {
@@ -65,15 +88,48 @@
                 this.selectedIds = this.selectedIds.filter(id => !this.pageIds.includes(id));
             }
         },
+        selectActiveOnPage() {
+            this.selectedIds = [...this.activePageIds];
+        },
+        selectedActiveCount() {
+            return this.selectedIds.filter(id => this.activePageIds.includes(String(id))).length;
+        },
+        selectedNonActiveCount() {
+            return this.selectedIds.filter(id => this.pageIds.includes(String(id)) && !this.activePageIds.includes(String(id))).length;
+        },
+        openBulkActivePeriodModal(preferredScope = null) {
+            if (preferredScope) {
+                this.bulkScope = preferredScope;
+            } else {
+                this.bulkScope = this.selectedIds.length > 0 ? 'selected' : 'all_active';
+            }
+            this.bulkActivePeriodOpen = true;
+        },
+        bulkCanSubmit() {
+            const d = parseInt(this.bulkDays, 10);
+            if (!Number.isInteger(d) || d < 1 || d > 365) return false;
+            if (this.bulkScope === 'selected') {
+                return this.selectedIds.length > 0;
+            }
+            return this.activeSubscriptionsTotal > 0;
+        },
         broadcastUrl() {
             const base = '{{ route('admin.whatsapp.broadcast') }}';
             if (this.selectedIds.length === 0) return base;
             return base + '?' + this.selectedIds.map(id => 'customer_ids[]=' + encodeURIComponent(id)).join('&');
         }
-     }">
+     }"
+     @keydown.escape.window="bulkActivePeriodOpen = false; editing = null">
 
     <x-page-header title="Customers List" subtitle="Manage customer details, service packages, PPPoE IPs, installation locations, and internet access status.">
         <x-slot:actions>
+            <button type="button" @click="openBulkActivePeriodModal()"
+                    class="inline-flex items-center gap-1.5 rounded-xl border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition">
+                <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                    <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <span x-text="selectedIds.length > 0 ? 'Bulk Active Period (' + selectedIds.length + ')' : 'Bulk Active Period'">Bulk Active Period</span>
+            </button>
             <a :href="broadcastUrl()"
                class="inline-flex items-center gap-1.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 transition">
                 <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
@@ -121,6 +177,12 @@
         @if($search !== '')
             <a href="{{ route('admin.customers.index') }}" class="rounded-xl border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-600">Reset</a>
         @endif
+        @if(count($activePageIds) > 0)
+            <button type="button" @click="selectActiveOnPage()"
+                    class="rounded-xl border border-indigo-200 bg-indigo-50 px-3.5 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition">
+                Select Active on Page ({{ count($activePageIds) }})
+            </button>
+        @endif
     </form>
 
     {{-- Full-width Customers Table --}}
@@ -135,12 +197,27 @@
         </x-empty-state>
     @else
         <div x-show="selectedIds.length > 0" x-transition
-             class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 text-xs text-emerald-900 shadow-sm"
+             class="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-indigo-200 bg-indigo-50 px-5 py-3 text-xs text-indigo-950 shadow-sm"
              style="display: none;">
-            <span class="font-semibold"><span x-text="selectedIds.length"></span> customer(s) selected for bulk WhatsApp messaging.</span>
-            <div class="flex items-center gap-2">
-                <button type="button" @click="selectedIds = []" class="rounded-lg border border-emerald-300 bg-white px-3 py-1.5 font-semibold text-emerald-800 hover:bg-emerald-100">
+            <div class="space-y-0.5">
+                <span class="font-semibold">
+                    <span x-text="selectedIds.length"></span> customer(s) selected
+                </span>
+                <span class="text-indigo-700" x-show="selectedNonActiveCount() > 0" style="display: none;">
+                    &middot; <span x-text="selectedActiveCount()"></span> Active,
+                    <span x-text="selectedNonActiveCount()"></span> Non-Active (skipped on bulk active period)
+                </span>
+            </div>
+            <div class="flex flex-wrap items-center gap-2">
+                <button type="button" @click="selectedIds = []" class="rounded-lg border border-slate-300 bg-white px-3 py-1.5 font-semibold text-slate-700 hover:bg-slate-50">
                     Clear Selection
+                </button>
+                <button type="button" @click="openBulkActivePeriodModal('selected')"
+                        class="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 px-3.5 py-1.5 font-semibold text-white hover:bg-indigo-700 transition">
+                    <svg class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                    </svg>
+                    Bulk Adjust Active Period
                 </button>
                 <a :href="broadcastUrl()" class="rounded-lg bg-emerald-600 px-3.5 py-1.5 font-semibold text-white hover:bg-emerald-700">
                     Open WA Broadcast Form &rarr;
@@ -164,7 +241,7 @@
                             <th class="px-5 py-3">Contact &amp; Portal</th>
                             <th class="px-5 py-3">Package &amp; Router</th>
                             <th class="px-5 py-3">PPPoE &amp; Remote IP</th>
-                            <th class="px-5 py-3">Status</th>
+                            <th class="px-5 py-3">Status &amp; Active Until</th>
                             <th class="px-5 py-3 text-right">Actions</th>
                         </tr>
                     </thead>
@@ -209,6 +286,9 @@
                                 <td class="px-5 py-3.5">
                                     @if($sub)
                                         <x-status-badge :status="$sub->status" />
+                                        <div class="mt-1 text-[11px] text-slate-500">
+                                            Until <span class="font-semibold text-slate-700">{{ $sub->next_billing_date->format('d M Y') }}</span>
+                                        </div>
                                     @else
                                         <x-status-badge status="pending_installation" />
                                     @endif
@@ -256,7 +336,7 @@
             <form method="POST" action="{{ route('admin.customers.store') }}" @submit="phoneWhatsapp = normalizeWa(phoneWhatsapp, true)" class="p-6 space-y-6">
                 @csrf
 
-                @if($errors->any())
+                @if($isAddCustomerError)
                     <div class="rounded-xl border border-rose-200 bg-rose-50 p-4 text-xs text-rose-700 space-y-1">
                         <div class="font-bold text-rose-800">Failed to save customer. Please review the following errors:</div>
                         <ul class="list-disc list-inside">
@@ -499,6 +579,193 @@
                     </div>
                 </form>
             </template>
+        </div>
+    </div>
+
+    {{-- Bulk Adjust Active Period Modal (Active Customers Only) --}}
+    <div x-show="bulkActivePeriodOpen"
+         x-transition:enter="transition ease-out duration-150"
+         x-transition:enter-start="opacity-0"
+         x-transition:enter-end="opacity-100"
+         x-transition:leave="transition ease-in duration-100"
+         x-transition:leave-start="opacity-100"
+         x-transition:leave-end="opacity-0"
+         class="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-sm p-4"
+         style="display: none;">
+        <div class="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto"
+             @click.outside="bulkActivePeriodOpen = false">
+            <div class="flex items-start justify-between gap-3">
+                <div>
+                    <h3 class="text-lg font-bold text-slate-900">Bulk Adjust Active Period</h3>
+                    <p class="text-xs text-slate-500 mt-0.5">
+                        Add or subtract days from each customer's current active period. Only <strong>Active</strong> subscriptions will be updated.
+                    </p>
+                </div>
+                <button type="button" @click="bulkActivePeriodOpen = false"
+                        class="rounded-lg p-1 text-slate-400 hover:bg-slate-100 hover:text-slate-600 transition"
+                        aria-label="Close modal">
+                    <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+                    </svg>
+                </button>
+            </div>
+
+            <form method="POST" action="{{ route('admin.customers.bulk-active-period') }}" class="space-y-4">
+                @csrf
+                <input type="hidden" name="form_context" value="bulk_active_period">
+
+                @if($isBulkActivePeriodError)
+                    <div class="rounded-xl border border-rose-200 bg-rose-50 p-3 text-xs text-rose-700 space-y-1">
+                        <div class="font-bold text-rose-800">Unable to apply bulk adjustment:</div>
+                        <ul class="list-disc list-inside">
+                            @foreach($errors->all() as $err)
+                                <li>{{ $err }}</li>
+                            @endforeach
+                        </ul>
+                    </div>
+                @endif
+
+                <template x-if="bulkScope === 'selected'">
+                    <div>
+                        <template x-for="id in selectedIds" :key="'bulk-cust-' + id">
+                            <input type="hidden" name="customer_ids[]" :value="id">
+                        </template>
+                    </div>
+                </template>
+
+                {{-- 1. Target Customers --}}
+                <div class="space-y-2">
+                    <label class="block text-xs font-semibold text-slate-700">Target Customers (Active Status Only)</label>
+                    <div class="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                        <label :class="bulkScope === 'selected' ? 'border-indigo-500 bg-indigo-50/70 ring-1 ring-indigo-500' : 'border-slate-200 bg-white hover:bg-slate-50'"
+                               class="flex items-start gap-2.5 rounded-xl border p-3 cursor-pointer transition">
+                            <input type="radio" name="target_scope" value="selected" x-model="bulkScope"
+                                   class="mt-0.5 text-indigo-600 focus:ring-indigo-500">
+                            <div class="text-xs">
+                                <div class="font-semibold text-slate-900">Selected Customers</div>
+                                <div class="text-slate-500 mt-0.5">
+                                    <span x-text="selectedIds.length"></span> selected
+                                    <template x-if="selectedIds.length > 0">
+                                        <span>(<span x-text="selectedActiveCount()"></span> active)</span>
+                                    </template>
+                                </div>
+                            </div>
+                        </label>
+                        <label :class="bulkScope === 'all_active' ? 'border-indigo-500 bg-indigo-50/70 ring-1 ring-indigo-500' : 'border-slate-200 bg-white hover:bg-slate-50'"
+                               class="flex items-start gap-2.5 rounded-xl border p-3 cursor-pointer transition">
+                            <input type="radio" name="target_scope" value="all_active" x-model="bulkScope"
+                                   class="mt-0.5 text-indigo-600 focus:ring-indigo-500">
+                            <div class="text-xs">
+                                <div class="font-semibold text-slate-900">All Active Customers</div>
+                                <div class="text-slate-500 mt-0.5">{{ $activeSubscriptionsCount }} active subscription(s)</div>
+                            </div>
+                        </label>
+                    </div>
+
+                    <div x-show="bulkScope === 'selected' && selectedIds.length === 0"
+                         class="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+                         style="display: none;">
+                        No customers are checked yet. Check customers in the table first, or switch to <strong>All Active Customers</strong>.
+                    </div>
+
+                    <div x-show="bulkScope === 'selected' && selectedNonActiveCount() > 0"
+                         class="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+                         style="display: none;">
+                        <strong x-text="selectedNonActiveCount()"></strong> selected customer(s) are not Active (e.g. isolated/pending) and will be skipped automatically.
+                    </div>
+                </div>
+
+                {{-- 2. Operation Type --}}
+                <div class="space-y-2">
+                    <label class="block text-xs font-semibold text-slate-700">Adjustment Direction</label>
+                    <input type="hidden" name="operation" :value="bulkOperation">
+                    <div class="grid grid-cols-2 gap-2.5">
+                        <button type="button" @click="bulkOperation = 'add'"
+                                :class="bulkOperation === 'add' ? 'border-emerald-500 bg-emerald-50 text-emerald-800 ring-1 ring-emerald-500' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'"
+                                class="rounded-xl border px-3 py-2.5 text-xs font-semibold transition">
+                            + Extend (Add Days)
+                        </button>
+                        <button type="button" @click="bulkOperation = 'subtract'"
+                                :class="bulkOperation === 'subtract' ? 'border-rose-500 bg-rose-50 text-rose-800 ring-1 ring-rose-500' : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50'"
+                                class="rounded-xl border px-3 py-2.5 text-xs font-semibold transition">
+                            &minus; Reduce (Subtract Days)
+                        </button>
+                    </div>
+                </div>
+
+                {{-- 3. Number of Days --}}
+                <div class="space-y-2">
+                    <label for="bulk-active-period-days" class="block text-xs font-semibold text-slate-700">
+                        Number of Days
+                    </label>
+                    <div class="flex items-center gap-2">
+                        <input type="number"
+                               id="bulk-active-period-days"
+                               name="days"
+                               x-model="bulkDays"
+                               min="1"
+                               max="365"
+                               required
+                               class="w-32 rounded-xl border-slate-300 text-sm font-mono font-bold focus:border-indigo-500 focus:ring-indigo-500">
+                        <span class="text-xs text-slate-500">day(s)</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-1.5">
+                        <span class="text-[11px] font-medium text-slate-500 mr-1">Quick preset:</span>
+                        @foreach([1, 3, 7, 14, 30] as $preset)
+                            <button type="button" @click="bulkDays = '{{ $preset }}'"
+                                    :class="String(bulkDays) === '{{ $preset }}' ? 'border-indigo-400 bg-indigo-50 text-indigo-700' : 'border-slate-200 bg-slate-50 text-slate-700 hover:bg-slate-100'"
+                                    class="rounded-lg border px-2.5 py-1 text-[11px] font-semibold transition">
+                                {{ $preset }}d
+                            </button>
+                        @endforeach
+                    </div>
+                </div>
+
+                {{-- Live Summary Preview --}}
+                <div :class="bulkOperation === 'add' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-rose-200 bg-rose-50 text-rose-900'"
+                     class="rounded-xl border p-3 text-xs space-y-1">
+                    <div class="font-bold">
+                        <span x-show="bulkOperation === 'add'">Preview: Extend Active Period by +<span x-text="bulkDays || 0"></span> day(s)</span>
+                        <span x-show="bulkOperation === 'subtract'" style="display: none;">Preview: Reduce Active Period by &minus;<span x-text="bulkDays || 0"></span> day(s)</span>
+                    </div>
+                    <p class="opacity-90">
+                        Each eligible <strong>Active</strong> subscription's current expiry date will be shifted relatively by
+                        <strong x-text="(bulkOperation === 'add' ? '+' : '-') + (bulkDays || 0) + ' day(s)'"></strong>.
+                        All changes are recorded in the Audit Log.
+                    </p>
+                </div>
+
+                {{-- 4. Optional Reason --}}
+                <div>
+                    <label for="bulk-active-period-reason" class="block text-xs font-semibold text-slate-700 mb-1">
+                        Reason / Note <span class="font-normal text-slate-400">(optional, recorded in audit log)</span>
+                    </label>
+                    <input type="text"
+                           id="bulk-active-period-reason"
+                           name="reason"
+                           x-model="bulkReason"
+                           maxlength="500"
+                           placeholder="e.g. Network outage compensation (+7 days)"
+                           class="w-full rounded-xl border-slate-300 text-sm focus:border-indigo-500 focus:ring-indigo-500">
+                </div>
+
+                <div class="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                    <button type="button" @click="bulkActivePeriodOpen = false"
+                            class="rounded-xl border border-slate-300 bg-white px-4 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition">
+                        Cancel
+                    </button>
+                    <button type="submit"
+                            :disabled="!bulkCanSubmit()"
+                            :class="[
+                                bulkOperation === 'add' ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700',
+                                !bulkCanSubmit() ? 'opacity-50 cursor-not-allowed' : ''
+                            ]"
+                            class="rounded-xl px-4 py-2 text-xs font-semibold text-white shadow-sm transition">
+                        <span x-show="bulkOperation === 'add'">Apply +<span x-text="bulkDays || 0"></span> Day(s)</span>
+                        <span x-show="bulkOperation === 'subtract'" style="display: none;">Apply &minus;<span x-text="bulkDays || 0"></span> Day(s)</span>
+                    </button>
+                </div>
+            </form>
         </div>
     </div>
 </div>

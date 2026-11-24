@@ -134,6 +134,8 @@ Route::middleware(['auth', 'active', 'role:super_admin,finance,noc'])->prefix('a
         Route::post('/customers/import', [OperationsController::class, 'importCustomers'])
             ->middleware('throttle:10,1')
             ->name('customers.import');
+        Route::post('/customers/bulk-active-period', [OperationsController::class, 'bulkUpdateActivePeriod'])
+            ->name('customers.bulk-active-period');
         Route::get('/customers/{customer}', [OperationsController::class, 'showCustomer'])->name('customers.show');
         Route::put('/customers/{customer}', [OperationsController::class, 'updateCustomer'])->name('customers.update');
         Route::post('/customers/{customer}/portal-account', [OperationsController::class, 'updateCustomerPortalAccount'])->name('customers.portal-account');
@@ -143,6 +145,8 @@ Route::middleware(['auth', 'active', 'role:super_admin,finance,noc'])->prefix('a
         Route::get('/subscriptions', [OperationsController::class, 'subscriptions'])->name('subscriptions.index');
         Route::post('/subscriptions', [OperationsController::class, 'storeSubscription'])->name('subscriptions.store');
         Route::put('/subscriptions/{subscription}', [OperationsController::class, 'updateSubscription'])->name('subscriptions.update');
+        Route::patch('/subscriptions/{subscription}/active-period', [OperationsController::class, 'updateActivePeriod'])
+            ->name('subscriptions.active-period.update');
         Route::delete('/subscriptions/{subscription}', [OperationsController::class, 'destroySubscription'])->name('subscriptions.destroy');
         Route::post('/subscriptions/{subscription}/provision', [OperationsController::class, 'provisionSubscription'])
             ->name('subscriptions.provision');
