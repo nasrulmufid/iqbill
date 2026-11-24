@@ -16,10 +16,18 @@
                         <th class="px-6 py-3">Method</th>
                         <th class="px-6 py-3">HTTP</th>
                         <th class="px-6 py-3">Processing Status</th>
+                        <th class="px-6 py-3">Detail / Error</th>
                     </tr>
                 </thead>
                 <tbody class="divide-y divide-slate-100">
                     @forelse($logs as $log)
+                        @php
+                            $statusClass = match ($log->processing_status) {
+                                'processed', 'late_settled' => 'text-emerald-700',
+                                'failed', 'rejected_invalid_auth' => 'text-rose-600',
+                                default => 'text-slate-600',
+                            };
+                        @endphp
                         <tr>
                             <td class="px-6 py-3">{{ $log->created_at?->timezone('Asia/Jakarta')->format('d M Y H:i:s') }}</td>
                             <td class="px-6 py-3 font-mono text-xs">{{ $log->svix_id ?? '-' }}</td>
@@ -27,10 +35,11 @@
                             <td class="px-6 py-3 font-mono">{{ $log->payment_code ?? '-' }}</td>
                             <td class="px-6 py-3">{{ $log->verification_method }}</td>
                             <td class="px-6 py-3">{{ $log->http_status_returned }}</td>
-                            <td class="px-6 py-3 font-semibold">{{ $log->processing_status }}</td>
+                            <td class="px-6 py-3 font-semibold {{ $statusClass }}">{{ $log->processing_status }}</td>
+                            <td class="px-6 py-3 text-xs {{ $log->error_message ? 'text-rose-600' : 'text-slate-400' }}">{{ $log->error_message ?: '-' }}</td>
                         </tr>
                     @empty
-                        <tr><td colspan="7" class="px-6 py-6 text-center text-slate-500">No webhook logs recorded yet.</td></tr>
+                        <tr><td colspan="8" class="px-6 py-6 text-center text-slate-500">No webhook logs recorded yet.</td></tr>
                     @endforelse
                 </tbody>
             </table>

@@ -473,3 +473,185 @@ test('8. Webhook accepts Sumopod payment.test event without payment identifiers'
         ->and($log->event_type)->toBe('payment.test')
         ->and($log->processing_status)->toBe('processed');
 });
+
+test('9. Sumopod customer-borne fee mode stores gross amount on session creation and settles webhook cleanly', function () {
+    Queue::fake();
+    $ctx = seedBillingContext(SubscriptionStatus::PendingInstallation, InvoiceStatus::Unpaid);
+    $invoice = $ctx['invoice'];
+    $invoice->update([
+        'gateway_fee_charged' => 1350,
+        'total_amount' => 151350,
+        'payment_attempt_count' => 0,
+    ]);
+
+    Http::fake([
+        'https://api-pay-sandbox.sumopod.com/api/v1/payments' => Http::response([
+            'payment_id' => '589533ba-c32c-47f8-8167-8d84a17bb0f5',
+            'order_id' => 'PAY-202611-000123-01',
+            'amount' => 152710,
+            'fee' => 1360,
+            'net_amount' => 151350,
+            'payment_link_url' => 'https://pay.sumopod.com/p/589533ba-c32c-47f8-8167-8d84a17bb0f5',
+            'expires_at' => now()->addHours(24)->toIso8601String(),
+            'status' => 'pending',
+        ], 200),
+    ]);
+
+    $payment = app(SumopodPaymentSessionService::class)->getOrCreateActiveSession($invoice->fresh());
+
+    expect((float) $payment->amount)->toBe(152710.0)
+        ->and((float) $payment->gateway_fee)->toBe(1360.0)
+        ->and((float) $payment->net_amount)->toBe(151350.0);
+
+    $rawBody = json_encode([
+        'event_type' => 'payment.completed',
+        'data' => [
+            'payment_id' => '589533ba-c32c-47f8-8167-8d84a17bb0f5',
+            'order_id' => 'PAY-202611-000123-01',
+            'amount' => 152710,
+            'fee' => 1360,
+            'net_amount' => 151350,
+            'status' => 'completed',
+            'payment_method' => 'qris',
+            'paid_at' => '2026-11-24T09:33:25Z',
+            'settled_at' => '2026-11-26T10:00:00Z',
+            'completed_at' => '2026-11-26T10:00:00Z',
+        ],
+    ], JSON_THROW_ON_ERROR);
+
+    $headers = buildSvixHeaders('msg_passthrough_new_01', time(), $rawBody, $ctx['rawSecret']);
+
+    $response = $this->call(
+        'POST',
+        '/api/webhooks/sumopod',
+        [],
+        [],
+        [],
+        collect($headers)->mapWithKeys(fn ($v, $k) => ['HTTP_' . strtoupper(str_replace('-', '_', $k)) => $v])->all()
+            + ['CONTENT_TYPE' => 'application/json'],
+        $rawBody
+    );
+
+    $response->assertOk()->assertJson(['received' => true, 'status' => 'processed']);
+
+    expect($invoice->fresh()->status)->toBe(InvoiceStatus::Paid)
+        ->and($payment->fresh()->status)->toBe(PaymentStatus::Paid)
+        ->and($ctx['subscription']->fresh()->status)->toBe(SubscriptionStatus::Active);
+
+    Queue::assertPushed(MikrotikProvisioningJob::class, fn ($job) => $job->action === 'restore');
+    Queue::assertPushed(SendWhatsAppNotificationJob::class, fn ($job) => $job->templateType === 'payment_receipt');
+});
+
+test('10. Webhook settles legacy pending payment with Sumopod pass-through fee and rejects tampered or inconsistent fee payloads', function () {
+    Queue::fake();
+    $ctx = seedBillingContext(SubscriptionStatus::PendingInstallation, InvoiceStatus::Unpaid);
+    $invoice = $ctx['invoice'];
+    $invoice->update([
+        'gateway_fee_charged' => 1350,
+        'total_amount' => 151350,
+    ]);
+
+    $payment = Payment::query()->create([
+        'invoice_id' => $invoice->id,
+        'attempt_number' => 1,
+        'payment_code' => 'PAY-202611-000123-01',
+        'external_reference' => '589533ba-c32c-47f8-8167-8d84a17bb0f5',
+        'gateway' => 'sumopod_qris',
+        'amount' => 151350,
+        'gateway_fee' => 1360,
+        'net_amount' => 151350,
+        'status' => PaymentStatus::Pending,
+    ]);
+
+    // 1. Negative fee attempting underpayment must be rejected with 422
+    $negativeFeeBody = json_encode([
+        'event_type' => 'payment.completed',
+        'data' => [
+            'payment_id' => '589533ba-c32c-47f8-8167-8d84a17bb0f5',
+            'order_id' => 'PAY-202611-000123-01',
+            'amount' => 150000,
+            'fee' => -1350,
+            'net_amount' => 151350,
+        ],
+    ], JSON_THROW_ON_ERROR);
+    $negHeaders = buildSvixHeaders('msg_neg_fee', time(), $negativeFeeBody, $ctx['rawSecret']);
+    $this->call(
+        'POST',
+        '/api/webhooks/sumopod',
+        [],
+        [],
+        [],
+        collect($negHeaders)->mapWithKeys(fn ($v, $k) => ['HTTP_' . strtoupper(str_replace('-', '_', $k)) => $v])->all()
+            + ['CONTENT_TYPE' => 'application/json'],
+        $negativeFeeBody
+    )->assertStatus(422)->assertJson(['received' => false, 'error' => 'amount_mismatch']);
+
+    // 2. Inconsistent gross (amount !== net_amount + fee) must be rejected with 422
+    $inconsistentBody = json_encode([
+        'event_type' => 'payment.completed',
+        'data' => [
+            'payment_id' => '589533ba-c32c-47f8-8167-8d84a17bb0f5',
+            'order_id' => 'PAY-202611-000123-01',
+            'amount' => 152710,
+            'fee' => 0,
+            'net_amount' => 151350,
+        ],
+    ], JSON_THROW_ON_ERROR);
+    $incHeaders = buildSvixHeaders('msg_inconsistent_fee', time(), $inconsistentBody, $ctx['rawSecret']);
+    $this->call(
+        'POST',
+        '/api/webhooks/sumopod',
+        [],
+        [],
+        [],
+        collect($incHeaders)->mapWithKeys(fn ($v, $k) => ['HTTP_' . strtoupper(str_replace('-', '_', $k)) => $v])->all()
+            + ['CONTENT_TYPE' => 'application/json'],
+        $inconsistentBody
+    )->assertStatus(422)->assertJson(['received' => false, 'error' => 'amount_mismatch']);
+
+    expect($invoice->fresh()->status)->toBe(InvoiceStatus::Unpaid);
+
+    // Webhook Logs UI displays recorded error_message for staff diagnostics
+    $admin = User::factory()->create(['role' => UserRole::SuperAdmin, 'is_active' => true]);
+    $this->actingAs($admin)
+        ->get(route('admin.webhooks.index'))
+        ->assertOk()
+        ->assertSee('Amount mismatch: expected 151350, got 150000.');
+
+    // 3. Valid resent Sumopod pass-through webhook settles legacy pending payment cleanly
+    $validBody = json_encode([
+        'event_type' => 'payment.completed',
+        'data' => [
+            'payment_id' => '589533ba-c32c-47f8-8167-8d84a17bb0f5',
+            'order_id' => 'PAY-202611-000123-01',
+            'amount' => 152710,
+            'fee' => 1360,
+            'net_amount' => 151350,
+            'status' => 'completed',
+            'payment_method' => 'qris',
+            'paid_at' => '2026-11-24T09:33:25Z',
+            'settled_at' => '2026-11-26T10:00:00Z',
+            'completed_at' => '2026-11-26T10:00:00Z',
+        ],
+    ], JSON_THROW_ON_ERROR);
+    $validHeaders = buildSvixHeaders('msg_passthrough_legacy', time(), $validBody, $ctx['rawSecret']);
+
+    $this->call(
+        'POST',
+        '/api/webhooks/sumopod',
+        [],
+        [],
+        [],
+        collect($validHeaders)->mapWithKeys(fn ($v, $k) => ['HTTP_' . strtoupper(str_replace('-', '_', $k)) => $v])->all()
+            + ['CONTENT_TYPE' => 'application/json'],
+        $validBody
+    )->assertOk()->assertJson(['received' => true, 'status' => 'processed']);
+
+    $settledPayment = $payment->fresh();
+    expect($settledPayment->status)->toBe(PaymentStatus::Paid)
+        ->and((float) $settledPayment->amount)->toBe(152710.0)
+        ->and((float) $settledPayment->gateway_fee)->toBe(1360.0)
+        ->and((float) $settledPayment->net_amount)->toBe(151350.0)
+        ->and($invoice->fresh()->status)->toBe(InvoiceStatus::Paid)
+        ->and($ctx['subscription']->fresh()->status)->toBe(SubscriptionStatus::Active);
+});

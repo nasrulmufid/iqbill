@@ -112,6 +112,7 @@
                         <option value="merchant" @selected($settings->sumopod_fee_bearer === 'merchant')>Merchant</option>
                         <option value="customer" @selected($settings->sumopod_fee_bearer === 'customer')>Customer</option>
                     </select>
+                    <p class="mt-1 text-[11px] text-slate-500">Keep as Merchant if Sumopod Dashboard already adds QRIS fees to the customer to avoid double fees.</p>
                 </div>
             </div>
 

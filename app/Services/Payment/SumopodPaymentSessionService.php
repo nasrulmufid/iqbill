@@ -84,11 +84,28 @@ class SumopodPaymentSessionService
                         'payment_attempt_count' => $nextAttempt,
                     ])->save();
 
-                    $amount = (float) $lockedInvoice->total_amount;
-                    $fee = isset($response['fee']) ? (float) $response['fee'] : 0.0;
-                    $netAmount = isset($response['net_amount'])
+                    $invoiceAmount = (float) $lockedInvoice->total_amount;
+                    $expectedInvoiceInt = (int) round($invoiceAmount);
+                    $fee = isset($response['fee']) && is_numeric($response['fee'])
+                        ? max(0.0, (float) $response['fee'])
+                        : 0.0;
+
+                    $responseAmount = isset($response['amount']) && is_numeric($response['amount'])
+                        ? (float) $response['amount']
+                        : $invoiceAmount;
+                    $responseNetAmount = isset($response['net_amount']) && is_numeric($response['net_amount'])
                         ? (float) $response['net_amount']
-                        : max(0.0, $amount - $fee);
+                        : null;
+
+                    // When Sumopod passes gateway fees to the customer, Sumopod charges
+                    // amount = invoice_total + fee and settles net_amount = invoice_total.
+                    $isGatewayFeeAddedOnTop = $responseNetAmount !== null
+                        && $fee > 0.0
+                        && (int) round($responseNetAmount) === $expectedInvoiceInt
+                        && (int) round($responseAmount) === (int) round($responseNetAmount + $fee);
+
+                    $amount = $isGatewayFeeAddedOnTop ? $responseAmount : $invoiceAmount;
+                    $netAmount = $responseNetAmount ?? max(0.0, $amount - $fee);
 
                     return Payment::query()->create([
                         'invoice_id' => $lockedInvoice->id,

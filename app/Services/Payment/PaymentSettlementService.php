@@ -183,7 +183,12 @@ class PaymentSettlementService
                 ];
             }
 
-            if (isset($data['currency']) && is_scalar($data['currency']) && strtoupper(trim((string) $data['currency'])) !== 'IDR') {
+            if (
+                isset($data['currency'])
+                && is_scalar($data['currency'])
+                && trim((string) $data['currency']) !== ''
+                && strtoupper(trim((string) $data['currency'])) !== 'IDR'
+            ) {
                 return [
                     'outcome' => 'currency_mismatch',
                     'error' => 'Unsupported payment currency.',
@@ -191,25 +196,41 @@ class PaymentSettlementService
             }
 
             $incomingAmount = is_numeric($data['amount'] ?? null) ? (int) round((float) $data['amount']) : -1;
-            $expectedAmount = (int) round((float) $payment->amount);
+            $expectedPaymentAmount = (int) round((float) $payment->amount);
+            $expectedInvoiceAmount = (int) round((float) $invoice->total_amount);
 
-            if ($incomingAmount !== $expectedAmount) {
+            $hasFee = isset($data['fee']) && is_numeric($data['fee']);
+            $hasNetAmount = isset($data['net_amount']) && is_numeric($data['net_amount']);
+            $incomingFeeInt = $hasFee ? (int) round((float) $data['fee']) : null;
+            $incomingNetInt = $hasNetAmount ? (int) round((float) $data['net_amount']) : null;
+
+            $exactPaymentMatch = $incomingAmount === $expectedPaymentAmount;
+            $passThroughFeeMatch = !$exactPaymentMatch
+                && $incomingFeeInt !== null
+                && $incomingFeeInt >= 0
+                && $incomingNetInt !== null
+                && $incomingNetInt === $expectedInvoiceAmount
+                && $incomingAmount === ($incomingNetInt + $incomingFeeInt);
+
+            if (!$exactPaymentMatch && !$passThroughFeeMatch) {
                 return [
                     'outcome' => 'amount_mismatch',
-                    'error' => "Amount mismatch: expected {$expectedAmount}, got {$incomingAmount}.",
+                    'error' => "Amount mismatch: expected {$expectedPaymentAmount}, got {$incomingAmount}.",
                 ];
             }
 
             $wasExpired = $payment->status === PaymentStatus::Expired;
-            $fee = isset($data['fee']) && is_numeric($data['fee']) ? (float) $data['fee'] : (float) $payment->gateway_fee;
-            $netAmount = isset($data['net_amount']) && is_numeric($data['net_amount'])
+            $fee = $hasFee ? (float) $data['fee'] : (float) $payment->gateway_fee;
+            $settledGrossAmount = $passThroughFeeMatch ? (float) $data['amount'] : (float) $payment->amount;
+            $netAmount = $hasNetAmount
                 ? (float) $data['net_amount']
-                : max(0.0, (float) $payment->amount - $fee);
+                : max(0.0, $settledGrossAmount - $fee);
 
             $paidAt = $this->parseTimestamp($data['paid_at'] ?? null);
             $settledAt = $this->parseTimestamp($data['settled_at'] ?? null);
 
             $payment->forceFill([
+                'amount' => $settledGrossAmount,
                 'status' => PaymentStatus::Paid,
                 'gateway_fee' => $fee,
                 'net_amount' => $netAmount,
