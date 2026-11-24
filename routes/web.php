@@ -23,6 +23,7 @@ use App\Livewire\Admin\SystemMonitoringComponent;
 use App\Livewire\Admin\WhatsappBroadcastComponent;
 use App\Livewire\Admin\WhatsappDeviceComponent;
 use App\Livewire\Portal\InvoicePaymentComponent;
+use Illuminate\Session\Middleware\AuthenticateSession;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Route;
 
@@ -37,6 +38,7 @@ Route::get('/', function () {
 });
 
 Route::get('/bayar/{public_token}', SmartPaymentRedirectController::class)
+    ->withoutMiddleware([AuthenticateSession::class])
     ->middleware('throttle:20,1')
     ->name('public.pay');
 

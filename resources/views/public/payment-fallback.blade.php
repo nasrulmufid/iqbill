@@ -25,10 +25,14 @@
                class="inline-flex w-full min-h-12 items-center justify-center rounded-xl bg-indigo-600 px-4 py-3 text-sm font-semibold text-white hover:bg-indigo-700 transition">
                 Retry Connection
             </a>
-            <a href="{{ route('login') }}"
-               class="inline-flex w-full min-h-12 items-center justify-center rounded-xl border border-slate-300 bg-white px-4 py-3 text-sm font-semibold text-slate-700 hover:bg-slate-50 transition">
-                Sign In to Customer Portal
-            </a>
+            <p class="text-xs text-slate-500">
+                @if(!empty($company?->company_phone))
+                    If this issue persists, please contact {{ $company->company_name ?: 'our support team' }}
+                    at <span class="font-mono font-medium text-slate-700">{{ $company->company_phone }}</span>.
+                @else
+                    No login is required to pay via this link. Please try again in a moment or contact your internet provider.
+                @endif
+            </p>
         </div>
     </div>
 </body>

@@ -655,3 +655,54 @@ test('10. Webhook settles legacy pending payment with Sumopod pass-through fee a
         ->and($invoice->fresh()->status)->toBe(InvoiceStatus::Paid)
         ->and($ctx['subscription']->fresh()->status)->toBe(SubscriptionStatus::Active);
 });
+
+test('11. Magic Link stays public without login prompt on gateway error or stale session, and secret inputs prevent autofill', function () {
+    $ctx = seedBillingContext();
+    $invoice = $ctx['invoice'];
+
+    // 1. When Sumopod returns HTTP 401, fallback page stays accessible without login CTA
+    Http::fake([
+        'https://api-pay-sandbox.sumopod.com/api/v1/payments' => Http::response([], 401),
+    ]);
+
+    $this->get(route('public.pay', $invoice->public_token))
+        ->assertOk()
+        ->assertViewIs('public.payment-fallback')
+        ->assertSee('Retry Connection')
+        ->assertSee($invoice->invoice_number)
+        ->assertDontSee('Sign In to Customer Portal')
+        ->assertDontSee(route('login'), false);
+
+    // 2. Even if browser sends a stale/mismatched portal session cookie (AuthenticateSession mismatch),
+    // the Magic Link must still redirect to Sumopod instead of redirecting to /login.
+    $userA = User::factory()->create(['role' => UserRole::Customer, 'is_active' => true]);
+    $userB = User::factory()->create(['role' => UserRole::Customer, 'is_active' => true]);
+
+    $this->actingAs($userA)->get(route('portal.dashboard'))->assertOk();
+    $this->withSession(['password_hash_web' => 'stale-mismatched-hash'])
+        ->actingAs($userB);
+
+    Payment::query()->create([
+        'invoice_id' => $invoice->id,
+        'attempt_number' => 1,
+        'payment_code' => 'PAY-202611-000123-01',
+        'external_reference' => 'pay_no_login_01',
+        'gateway' => 'sumopod_qris',
+        'amount' => 150000,
+        'payment_url' => 'https://pay.sumopod.com/p/pay_no_login_01',
+        'qris_expires_at' => now()->addHours(12),
+        'status' => PaymentStatus::Pending,
+    ]);
+
+    $this->get(route('public.pay', $invoice->public_token))
+        ->assertRedirect('https://pay.sumopod.com/p/pay_no_login_01');
+
+    // 3. Payment Settings renders autocomplete="new-password" on secret fields to avoid browser autofill overwrites
+    $this->flushSession();
+    $admin = User::factory()->create(['role' => UserRole::SuperAdmin, 'is_active' => true]);
+    $this->actingAs($admin)
+        ->get(route('admin.settings.payment.edit'))
+        ->assertOk()
+        ->assertSee('autocomplete="off"', false)
+        ->assertSee('autocomplete="new-password"', false);
+});

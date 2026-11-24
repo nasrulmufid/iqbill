@@ -19,7 +19,7 @@
         </div>
     </div>
 
-    <form method="POST" action="{{ route('admin.settings.payment.update') }}" class="space-y-6">
+    <form method="POST" action="{{ route('admin.settings.payment.update') }}" autocomplete="off" class="space-y-6">
         @csrf
         @method('PUT')
 
@@ -156,15 +156,15 @@
             <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
                 <div>
                     <label class="block text-xs font-medium text-slate-700">X-Api-Key</label>
-                    <input type="password" name="sumopod_api_key" placeholder="{{ $maskedApiKey ?: 'Empty' }}" class="mt-1 w-full rounded-xl border-slate-300 text-sm">
+                    <input type="password" name="sumopod_api_key" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" placeholder="{{ $maskedApiKey ?: 'Empty' }}" class="mt-1 w-full rounded-xl border-slate-300 text-sm">
                 </div>
                 <div>
                     <label class="block text-xs font-medium text-slate-700">Svix Signing Secret (whsec_...)</label>
-                    <input type="password" name="sumopod_signing_secret" placeholder="{{ $maskedSigningSecret ?: 'Empty' }}" class="mt-1 w-full rounded-xl border-slate-300 text-sm">
+                    <input type="password" name="sumopod_signing_secret" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" placeholder="{{ $maskedSigningSecret ?: 'Empty' }}" class="mt-1 w-full rounded-xl border-slate-300 text-sm">
                 </div>
                 <div>
                     <label class="block text-xs font-medium text-slate-700">Webhook Token (whtok_...)</label>
-                    <input type="password" name="sumopod_webhook_token" placeholder="{{ $maskedWebhookToken ?: 'Empty' }}" class="mt-1 w-full rounded-xl border-slate-300 text-sm">
+                    <input type="password" name="sumopod_webhook_token" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" placeholder="{{ $maskedWebhookToken ?: 'Empty' }}" class="mt-1 w-full rounded-xl border-slate-300 text-sm">
                     @if($maskedWebhookToken !== '')
                         <label class="mt-1.5 inline-flex items-center gap-1.5 text-xs text-slate-600">
                             <input type="checkbox" name="clear_sumopod_webhook_token" value="1" class="rounded border-slate-300 text-rose-600">
@@ -187,7 +187,7 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div>
                     <label class="block text-xs font-medium text-slate-700">Bot Token (@BotFather)</label>
-                    <input type="password" name="telegram_bot_token" placeholder="{{ $maskedTelegramToken ?: '123456:ABC-DEF...' }}"
+                    <input type="password" name="telegram_bot_token" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" placeholder="{{ $maskedTelegramToken ?: '123456:ABC-DEF...' }}"
                            class="mt-1 w-full rounded-xl border-slate-300 text-sm">
                 </div>
                 <div>
@@ -214,7 +214,7 @@
             <p class="text-xs text-slate-500">Used to pin customer coordinates on the map and auto-fill installation addresses (Maps JavaScript API + Geocoding API).</p>
             <div>
                 <label class="block text-xs font-medium text-slate-700">Google Maps API Key</label>
-                <input type="password" name="google_maps_api_key" placeholder="{{ $maskedGoogleMapsKey ?: 'AIzaSy...' }}"
+                <input type="password" name="google_maps_api_key" autocomplete="new-password" data-lpignore="true" data-1p-ignore="true" placeholder="{{ $maskedGoogleMapsKey ?: 'AIzaSy...' }}"
                        class="mt-1 w-full rounded-xl border-slate-300 text-sm">
             </div>
         </div>

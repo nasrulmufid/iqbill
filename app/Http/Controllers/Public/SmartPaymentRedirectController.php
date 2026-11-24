@@ -7,11 +7,13 @@ namespace App\Http\Controllers\Public;
 use App\Enums\InvoiceStatus;
 use App\Exceptions\SumopodException;
 use App\Http\Controllers\Controller;
+use App\Models\CompanySetting;
 use App\Models\Invoice;
 use App\Services\Payment\SumopodPaymentSessionService;
 use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\RedirectResponse;
 use Illuminate\Http\Response;
+use Illuminate\Support\Facades\Log;
 
 class SmartPaymentRedirectController extends Controller
 {
@@ -52,16 +54,29 @@ class SmartPaymentRedirectController extends Controller
                 ->away($paymentUrl, 302)
                 ->header('Cache-Control', 'no-store, private');
         } catch (SumopodException $e) {
+            Log::warning('Smart payment link gateway error', [
+                'invoice_id' => $invoice->id,
+                'invoice_number' => $invoice->invoice_number,
+                'error' => $e->getMessage(),
+            ]);
+
             return response()
                 ->view('public.payment-fallback', [
                     'invoice' => $invoice,
+                    'company' => CompanySetting::current(),
                     'errorMessage' => $e->getMessage(),
                 ])
                 ->header('Cache-Control', 'no-store, private');
         } catch (LockTimeoutException) {
+            Log::warning('Smart payment link lock timeout', [
+                'invoice_id' => $invoice->id,
+                'invoice_number' => $invoice->invoice_number,
+            ]);
+
             return response()
                 ->view('public.payment-fallback', [
                     'invoice' => $invoice,
+                    'company' => CompanySetting::current(),
                     'errorMessage' => 'Payment session is currently being prepared. Please refresh in a few seconds.',
                 ], 503)
                 ->header('Cache-Control', 'no-store, private');
