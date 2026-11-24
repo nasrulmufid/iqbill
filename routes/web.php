@@ -49,13 +49,15 @@ Route::post('/logout', [LoginController::class, 'logout'])
     ->middleware('auth')
     ->name('logout');
 
-Route::middleware(['auth'])->prefix('portal')->as('portal.')->group(function () {
+Route::middleware(['auth', 'active'])->prefix('portal')->as('portal.')->group(function () {
     Route::get('/dashboard', PortalDashboardController::class)->name('dashboard');
     Route::get('/invoices', [PortalInvoiceController::class, 'index'])->name('invoices.index');
     Route::get('/invoices/{invoice}/download', [PortalInvoiceController::class, 'download'])->name('invoices.download');
     Route::get('/invoices/{invoice}/print', [PortalInvoiceController::class, 'print'])->name('invoices.print');
     Route::get('/invoices/{invoice}', InvoicePaymentComponent::class)->name('invoices.show');
-    Route::post('/invoices/{invoice}/session', [PortalInvoiceApiController::class, 'session'])->name('invoices.session');
+    Route::post('/invoices/{invoice}/session', [PortalInvoiceApiController::class, 'session'])
+        ->middleware('throttle:10,1')
+        ->name('invoices.session');
     Route::get('/invoices/{invoice}/status', [PortalInvoiceApiController::class, 'status'])->name('invoices.status');
 
     Route::get('/tickets', [PortalTicketController::class, 'index'])->name('tickets.index');
@@ -65,10 +67,12 @@ Route::middleware(['auth'])->prefix('portal')->as('portal.')->group(function () 
 
     Route::get('/account', [PortalAccountController::class, 'edit'])->name('account.edit');
     Route::put('/account/profile', [PortalAccountController::class, 'updateProfile'])->name('account.profile');
-    Route::put('/account/password', [PortalAccountController::class, 'updatePassword'])->name('account.password');
+    Route::put('/account/password', [PortalAccountController::class, 'updatePassword'])
+        ->middleware('throttle:10,1')
+        ->name('account.password');
 });
 
-Route::middleware(['auth', 'role:super_admin,finance,noc'])->prefix('admin')->as('admin.')->group(function () {
+Route::middleware(['auth', 'active', 'role:super_admin,finance,noc'])->prefix('admin')->as('admin.')->group(function () {
     Route::get('/dashboard', AdminDashboardController::class)->name('dashboard');
     Route::get('/invoices', [AdminInvoiceController::class, 'index'])->name('invoices.index');
     Route::get('/invoices/{invoice}', [AdminInvoiceController::class, 'show'])->name('invoices.show');
@@ -90,7 +94,9 @@ Route::middleware(['auth', 'role:super_admin,finance,noc'])->prefix('admin')->as
         Route::post('/subscriptions/{subscription}/receive-cash', [OperationsController::class, 'receiveCash'])
             ->name('subscriptions.receive-cash');
         Route::get('/finance', [FinanceController::class, 'index'])->name('finance.index');
-        Route::get('/finance/export', [FinanceController::class, 'exportXlsx'])->name('finance.export');
+        Route::get('/finance/export', [FinanceController::class, 'exportXlsx'])
+            ->middleware('throttle:10,1')
+            ->name('finance.export');
     });
 
     Route::middleware('role:super_admin,noc')->group(function () {
@@ -119,9 +125,13 @@ Route::middleware(['auth', 'role:super_admin,finance,noc'])->prefix('admin')->as
         // Customers + Excel Import/Export + Customer Detail
         Route::get('/customers', [OperationsController::class, 'customers'])->name('customers.index');
         Route::post('/customers', [OperationsController::class, 'storeCustomer'])->name('customers.store');
-        Route::get('/customers/export', [OperationsController::class, 'exportCustomers'])->name('customers.export');
+        Route::get('/customers/export', [OperationsController::class, 'exportCustomers'])
+            ->middleware('throttle:10,1')
+            ->name('customers.export');
         Route::get('/customers/import-template', [OperationsController::class, 'downloadCustomerTemplate'])->name('customers.template');
-        Route::post('/customers/import', [OperationsController::class, 'importCustomers'])->name('customers.import');
+        Route::post('/customers/import', [OperationsController::class, 'importCustomers'])
+            ->middleware('throttle:10,1')
+            ->name('customers.import');
         Route::get('/customers/{customer}', [OperationsController::class, 'showCustomer'])->name('customers.show');
         Route::put('/customers/{customer}', [OperationsController::class, 'updateCustomer'])->name('customers.update');
         Route::post('/customers/{customer}/portal-account', [OperationsController::class, 'updateCustomerPortalAccount'])->name('customers.portal-account');

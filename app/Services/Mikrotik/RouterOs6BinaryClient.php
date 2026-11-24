@@ -14,6 +14,12 @@ use Throwable;
  */
 class RouterOs6BinaryClient implements RouterOsClientInterface
 {
+    private const MAX_WORD_BYTES = 16 * 1024 * 1024;
+
+    private const MAX_TOTAL_BYTES = 32 * 1024 * 1024;
+
+    private const MAX_SENTENCES = 50000;
+
     /** @var resource|null */
     private $socket = null;
 
@@ -80,30 +86,44 @@ class RouterOs6BinaryClient implements RouterOsClientInterface
 
     public function exportRsc(): string
     {
+        $this->assertSafeEndpoint();
+
         $filename = 'billing-rsc-' . now()->format('YmdHis');
+        $exportedFileId = null;
 
         try {
-            $this->command('/export', ['file' => $filename]);
+            $this->command('/export', ['file' => $filename, 'hide-sensitive' => '']);
             // Allow router a short moment to flush the .rsc file to flash/RAM
             usleep(400000);
             $files = $this->print('/file', ['name' => "{$filename}.rsc"]);
 
-            if (!empty($files[0]['contents'])) {
-                $contents = (string) $files[0]['contents'];
-                if (!empty($files[0]['.id'])) {
-                    $this->remove('/file', $files[0]['.id']);
-                }
+            if (!empty($files[0]['.id'])) {
+                $exportedFileId = (string) $files[0]['.id'];
+            }
 
-                return $contents;
+            if (!empty($files[0]['contents'])) {
+                return (string) $files[0]['contents'];
             }
         } catch (Throwable) {
-            // Fall back to SSH /export if file size exceeds /file/print contents limit
+            // Fall back to optional SSH /export if enabled and file size exceeds /file/print contents limit
+        } finally {
+            if ($exportedFileId !== null) {
+                try {
+                    $this->remove('/file', $exportedFileId);
+                } catch (Throwable) {
+                    // Best-effort cleanup of temporary router export file
+                }
+            }
+        }
+
+        if (!config('services.mikrotik.allow_ssh_fallback', false)) {
+            throw new MikrotikException('Router .rsc export output is empty or exceeded the API read limit (SSH fallback is disabled).');
         }
 
         try {
             $process = Ssh::create($this->router->username, $this->router->host, $this->router->ssh_port ?: 22)
                 ->disableStrictHostKeyChecking()
-                ->execute('/export');
+                ->execute('/export hide-sensitive');
 
             $output = trim($process->getOutput());
             if ($output !== '') {
@@ -125,6 +145,17 @@ class RouterOs6BinaryClient implements RouterOsClientInterface
         $this->connected = false;
     }
 
+    private function assertSafeEndpoint(): void
+    {
+        if (!MikrotikRouter::isValidHost((string) $this->router->host)) {
+            throw new MikrotikException('Router host is invalid or blocked by security policy.', 0, null, isConnectionError: false);
+        }
+
+        if (!MikrotikRouter::isValidUsername((string) $this->router->username)) {
+            throw new MikrotikException('Router username contains disallowed characters.', 0, null, isConnectionError: false);
+        }
+    }
+
     /**
      * @param  array<int, string>  $words
      * @return array<int, array<string, string>>
@@ -143,15 +174,24 @@ class RouterOs6BinaryClient implements RouterOsClientInterface
             return;
         }
 
+        $this->assertSafeEndpoint();
+
         $scheme = $this->router->use_ssl ? 'ssl://' : '';
         $port = $this->router->api_port ?: ($this->router->use_ssl ? 8729 : 8728);
+        $verifyTls = (bool) config('services.mikrotik.verify_tls', true);
+        $caBundle = config('services.mikrotik.ca_bundle');
+
+        $sslOptions = [
+            'verify_peer' => $verifyTls,
+            'verify_peer_name' => $verifyTls,
+            'allow_self_signed' => !$verifyTls,
+        ];
+        if ($verifyTls && is_string($caBundle) && $caBundle !== '') {
+            $sslOptions['cafile'] = $caBundle;
+        }
 
         $context = stream_context_create([
-            'ssl' => [
-                'verify_peer' => false,
-                'verify_peer_name' => false,
-                'allow_self_signed' => true,
-            ],
+            'ssl' => $sslOptions,
         ]);
 
         $socket = @stream_socket_client(
@@ -253,21 +293,26 @@ class RouterOs6BinaryClient implements RouterOsClientInterface
     /**
      * @return array<int, array<int, string>>
      */
-    private function readRawSentences(): array
+    protected function readRawSentences(): array
     {
         $sentences = [];
         $current = [];
-        $deadline = time() + $this->timeout;
+        $totalBytes = 0;
+        $deadline = microtime(true) + $this->timeout;
 
         while (true) {
-            if (time() > $deadline) {
+            if (microtime(true) > $deadline) {
                 throw new MikrotikException('RouterOS API read timeout.');
             }
 
-            $word = $this->readWord();
+            $word = $this->readWord($deadline);
             if ($word === '') {
                 if ($current !== []) {
                     $sentences[] = $current;
+                    if (count($sentences) > self::MAX_SENTENCES) {
+                        throw new MikrotikException('RouterOS response exceeded maximum sentence limit.');
+                    }
+
                     $tag = $current[0] ?? '';
                     $current = [];
 
@@ -276,6 +321,11 @@ class RouterOs6BinaryClient implements RouterOsClientInterface
                     }
                 }
                 continue;
+            }
+
+            $totalBytes += strlen($word);
+            if ($totalBytes > self::MAX_TOTAL_BYTES) {
+                throw new MikrotikException('RouterOS response exceeded maximum total byte limit.');
             }
 
             $current[] = $word;
@@ -330,19 +380,48 @@ class RouterOs6BinaryClient implements RouterOsClientInterface
         }
     }
 
-    private function readWord(): string
+    protected function readWord(float $deadline): string
     {
-        $length = $this->decodeLength();
-        if ($length <= 0) {
+        $length = $this->decodeLength($deadline);
+        if ($length === 0) {
             return '';
         }
 
+        if ($length < 0 || $length > self::MAX_WORD_BYTES) {
+            throw new MikrotikException("RouterOS binary API word length ({$length}) exceeds allowed limit.");
+        }
+
+        return $this->readExact($length, $deadline);
+    }
+
+    private function readExact(int $bytes, float $deadline): string
+    {
+        if (!is_resource($this->socket)) {
+            throw new MikrotikException('RouterOS socket is not active.');
+        }
+
         $buffer = '';
-        while (strlen($buffer) < $length) {
-            $chunk = @fread($this->socket, $length - strlen($buffer));
-            if ($chunk === false || $chunk === '') {
-                throw new MikrotikException('RouterOS socket connection closed while reading response.');
+        while (strlen($buffer) < $bytes) {
+            if (microtime(true) > $deadline) {
+                throw new MikrotikException('RouterOS API read timeout.');
             }
+
+            $remaining = $bytes - strlen($buffer);
+            $chunk = @fread($this->socket, min($remaining, 8192));
+            if ($chunk === false) {
+                throw new MikrotikException('RouterOS socket read failed.');
+            }
+            if ($chunk === '') {
+                $meta = @stream_get_meta_data($this->socket);
+                if (!empty($meta['timed_out'])) {
+                    throw new MikrotikException('RouterOS API read timeout.');
+                }
+                if (feof($this->socket)) {
+                    throw new MikrotikException('RouterOS socket connection closed unexpectedly (EOF).');
+                }
+                throw new MikrotikException('RouterOS socket returned empty read.');
+            }
+
             $buffer .= $chunk;
         }
 
@@ -373,34 +452,35 @@ class RouterOs6BinaryClient implements RouterOsClientInterface
         return chr(0xF0) . pack('N', $len);
     }
 
-    private function decodeLength(): int
+    protected function decodeLength(float $deadline): int
     {
-        $first = @fread($this->socket, 1);
-        if ($first === false || $first === '') {
-            return 0;
-        }
-
+        $first = $this->readExact(1, $deadline);
         $byte = ord($first);
 
         if (($byte & 0x80) === 0x00) {
             return $byte;
         }
         if (($byte & 0xC0) === 0x80) {
-            return (($byte & ~0xC0) << 8) | ord((string) @fread($this->socket, 1));
+            $rest = $this->readExact(1, $deadline);
+
+            return (($byte & ~0xC0) << 8) | ord($rest);
         }
         if (($byte & 0xE0) === 0xC0) {
-            $rest = (string) @fread($this->socket, 2);
+            $rest = $this->readExact(2, $deadline);
 
-            return (($byte & ~0xE0) << 16) | (ord($rest[0] ?? "\0") << 8) | ord($rest[1] ?? "\0");
+            return (($byte & ~0xE0) << 16) | (ord($rest[0]) << 8) | ord($rest[1]);
         }
         if (($byte & 0xF0) === 0xE0) {
-            $rest = (string) @fread($this->socket, 3);
+            $rest = $this->readExact(3, $deadline);
 
-            return (($byte & ~0xF0) << 24) | (ord($rest[0] ?? "\0") << 16) | (ord($rest[1] ?? "\0") << 8) | ord($rest[2] ?? "\0");
+            return (($byte & ~0xF0) << 24) | (ord($rest[0]) << 16) | (ord($rest[1]) << 8) | ord($rest[2]);
+        }
+        if ($byte === 0xF0) {
+            $rest = $this->readExact(4, $deadline);
+
+            return (int) (unpack('N', $rest)[1] ?? 0);
         }
 
-        $rest = (string) @fread($this->socket, 4);
-
-        return (int) (unpack('N', $rest)[1] ?? 0);
+        throw new MikrotikException('Invalid RouterOS binary length prefix byte.');
     }
 }

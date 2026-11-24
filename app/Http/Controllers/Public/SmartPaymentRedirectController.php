@@ -9,8 +9,9 @@ use App\Exceptions\SumopodException;
 use App\Http\Controllers\Controller;
 use App\Models\Invoice;
 use App\Services\Payment\SumopodPaymentSessionService;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\RedirectResponse;
-use Illuminate\View\View;
+use Illuminate\Http\Response;
 
 class SmartPaymentRedirectController extends Controller
 {
@@ -19,7 +20,7 @@ class SmartPaymentRedirectController extends Controller
     ) {
     }
 
-    public function __invoke(string $public_token): RedirectResponse|View
+    public function __invoke(string $public_token): RedirectResponse|Response
     {
         $invoice = Invoice::query()
             ->with(['customer', 'subscription.package'])
@@ -31,21 +32,39 @@ class SmartPaymentRedirectController extends Controller
         }
 
         if ($invoice->status === InvoiceStatus::Paid) {
-            return view('public.payment-paid', [
-                'invoice' => $invoice,
-                'maskedName' => $invoice->customer->maskedName(),
-            ]);
+            return response()
+                ->view('public.payment-paid', [
+                    'invoice' => $invoice,
+                    'maskedName' => $invoice->customer->maskedName(),
+                ])
+                ->header('Cache-Control', 'no-store, private');
         }
 
         try {
             $payment = $this->sessionService->getOrCreateActiveSession($invoice);
+            $paymentUrl = (string) $payment->payment_url;
 
-            return redirect()->away((string) $payment->payment_url, 302);
+            if (!preg_match('#^https?://#i', $paymentUrl)) {
+                throw new SumopodException('Invalid payment redirect URL received from gateway.');
+            }
+
+            return redirect()
+                ->away($paymentUrl, 302)
+                ->header('Cache-Control', 'no-store, private');
         } catch (SumopodException $e) {
-            return view('public.payment-fallback', [
-                'invoice' => $invoice,
-                'errorMessage' => $e->getMessage(),
-            ]);
+            return response()
+                ->view('public.payment-fallback', [
+                    'invoice' => $invoice,
+                    'errorMessage' => $e->getMessage(),
+                ])
+                ->header('Cache-Control', 'no-store, private');
+        } catch (LockTimeoutException) {
+            return response()
+                ->view('public.payment-fallback', [
+                    'invoice' => $invoice,
+                    'errorMessage' => 'Payment session is currently being prepared. Please refresh in a few seconds.',
+                ], 503)
+                ->header('Cache-Control', 'no-store, private');
         }
     }
 }

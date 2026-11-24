@@ -72,7 +72,10 @@ class RouterOs7RestClient implements RouterOsClientInterface
 
     public function exportRsc(): string
     {
+        $this->assertSafeEndpoint();
+
         $filename = 'billing-rsc-' . now()->format('YmdHis');
+        $exportedFileId = null;
 
         try {
             $this->command('/export', ['file' => $filename]);
@@ -80,19 +83,30 @@ class RouterOs7RestClient implements RouterOsClientInterface
             $files = $this->print('/file', ['name' => "{$filename}.rsc"]);
 
             if (!empty($files[0]['.id'])) {
+                $exportedFileId = (string) $files[0]['.id'];
                 $detail = $this->http()
-                    ->get($this->baseUrl() . '/file/' . urlencode($files[0]['.id']))
+                    ->get($this->baseUrl() . '/file/' . urlencode($exportedFileId))
                     ->json();
 
                 $contents = is_array($detail) ? ($detail['contents'] ?? null) : null;
                 if (is_string($contents) && $contents !== '') {
-                    $this->remove('/file', $files[0]['.id']);
-
                     return $contents;
                 }
             }
         } catch (Throwable) {
-            // Continue fallback to SSH
+            // Continue to optional SSH fallback if enabled
+        } finally {
+            if ($exportedFileId !== null) {
+                try {
+                    $this->remove('/file', $exportedFileId);
+                } catch (Throwable) {
+                    // Best-effort cleanup of temporary router export file
+                }
+            }
+        }
+
+        if (!config('services.mikrotik.allow_ssh_fallback', false)) {
+            throw new MikrotikException('Failed to retrieve .rsc configuration contents via RouterOS 7 REST API (SSH fallback is disabled).');
         }
 
         try {
@@ -116,8 +130,21 @@ class RouterOs7RestClient implements RouterOsClientInterface
         // Stateless HTTP REST client
     }
 
+    private function assertSafeEndpoint(): void
+    {
+        if (!MikrotikRouter::isValidHost((string) $this->router->host)) {
+            throw new MikrotikException('Router host is invalid or blocked by security policy.', 0, null, isConnectionError: false);
+        }
+
+        if (!MikrotikRouter::isValidUsername((string) $this->router->username)) {
+            throw new MikrotikException('Router username contains disallowed characters.', 0, null, isConnectionError: false);
+        }
+    }
+
     private function baseUrl(): string
     {
+        $this->assertSafeEndpoint();
+
         $scheme = $this->router->use_ssl ? 'https' : 'http';
         $port = $this->router->rest_port ?: ($this->router->use_ssl ? 443 : 80);
         $defaultPort = $this->router->use_ssl ? 443 : 80;
@@ -128,11 +155,21 @@ class RouterOs7RestClient implements RouterOsClientInterface
 
     private function http(): PendingRequest
     {
-        return Http::timeout($this->timeout)
-            ->withoutVerifying()
+        $http = Http::timeout($this->timeout)
             ->acceptJson()
             ->asJson()
             ->withBasicAuth($this->router->username, (string) $this->router->password_encrypted);
+
+        $verifyTls = (bool) config('services.mikrotik.verify_tls', true);
+        $caBundle = config('services.mikrotik.ca_bundle');
+
+        if (!$verifyTls) {
+            $http = $http->withoutVerifying();
+        } elseif (is_string($caBundle) && $caBundle !== '') {
+            $http = $http->withOptions(['verify' => $caBundle]);
+        }
+
+        return $http;
     }
 
     /**

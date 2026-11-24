@@ -27,7 +27,9 @@ final class SumopodWebhookVerifier
         $svixSignature = $request->header('svix-signature');
         $headerToken = $request->header('X-Webhook-Token');
 
-        if ($mode === 'signature' || ($mode === 'auto' && $svixSignature !== null)) {
+        $hasSigningSecret = !empty($signingSecret);
+
+        if ($mode === 'signature' || ($mode === 'auto' && $hasSigningSecret)) {
             return $this->verifySvixSignature(
                 $rawBody,
                 $svixId,
@@ -68,7 +70,7 @@ final class SumopodWebhookVerifier
             : $signingSecret;
 
         $secretBytes = base64_decode($cleanSecret, true);
-        if ($secretBytes === false) {
+        if ($secretBytes === false || $secretBytes === '') {
             return ['valid' => false, 'method' => 'svix_hmac', 'reason' => 'Invalid base64 signing secret.'];
         }
 

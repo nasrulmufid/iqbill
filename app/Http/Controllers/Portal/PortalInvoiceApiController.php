@@ -5,9 +5,11 @@ declare(strict_types=1);
 namespace App\Http\Controllers\Portal;
 
 use App\Enums\InvoiceStatus;
+use App\Exceptions\SumopodException;
 use App\Http\Controllers\Controller;
 use App\Models\Invoice;
 use App\Services\Payment\SumopodPaymentSessionService;
+use Illuminate\Contracts\Cache\LockTimeoutException;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\Gate;
 
@@ -21,7 +23,13 @@ class PortalInvoiceApiController extends Controller
             return response()->json(['message' => 'Invoice is not payable.'], 422);
         }
 
-        $payment = $sessionService->getOrCreateActiveSession($invoice);
+        try {
+            $payment = $sessionService->getOrCreateActiveSession($invoice);
+        } catch (SumopodException $e) {
+            return response()->json(['message' => $e->getMessage()], 422);
+        } catch (LockTimeoutException) {
+            return response()->json(['message' => 'Payment session is currently being prepared. Please retry shortly.'], 503);
+        }
 
         return response()->json([
             'payment_code' => $payment->payment_code,

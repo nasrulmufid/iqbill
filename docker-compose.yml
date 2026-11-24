@@ -16,22 +16,22 @@ x-app-env: &app-env
   DB_PORT: ${DB_PORT:-3306}
   DB_DATABASE: ${DB_DATABASE:-iqbill}
   DB_USERNAME: ${DB_USERNAME:-iqbill}
-  DB_PASSWORD: ${DB_PASSWORD:-change_me_strong_db_password}
+  DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env before starting Docker Compose}
   SESSION_DRIVER: ${SESSION_DRIVER:-redis}
   SESSION_LIFETIME: ${SESSION_LIFETIME:-120}
   SESSION_ENCRYPT: ${SESSION_ENCRYPT:-true}
-  SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-false}
+  SESSION_SECURE_COOKIE: ${SESSION_SECURE_COOKIE:-true}
   SESSION_SAME_SITE: ${SESSION_SAME_SITE:-lax}
   QUEUE_CONNECTION: ${QUEUE_CONNECTION:-redis}
   CACHE_STORE: ${CACHE_STORE:-redis}
   CACHE_PREFIX: ${CACHE_PREFIX:-iqbill_}
   REDIS_CLIENT: ${REDIS_CLIENT:-predis}
   REDIS_HOST: ${REDIS_HOST:-redis}
-  REDIS_PASSWORD: ${REDIS_PASSWORD:-change_me_strong_redis_password}
+  REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env before starting Docker Compose}
   REDIS_PORT: ${REDIS_PORT:-6379}
-  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-*}
+  TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
   ADMIN_EMAIL: ${ADMIN_EMAIL:-admin@iqbill.local}
-  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-change_me_min_12_chars}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:?Set ADMIN_PASSWORD (min 12 chars) in .env before starting Docker Compose}
   ADMIN_PHONE: ${ADMIN_PHONE:-6281100000000}
   ISP_COMPANY_NAME: ${ISP_COMPANY_NAME:-IQ Bill}
   ISP_COMPANY_ADDRESS: ${ISP_COMPANY_ADDRESS:-Jl. Jend. Sudirman No. 1, Jakarta}
@@ -40,7 +40,7 @@ x-app-env: &app-env
   AUTO_SEED: ${AUTO_SEED:-true}
   GOWA_API_URL: ${GOWA_API_URL:-http://gowa:3000}
   GOWA_BASIC_AUTH_USER: ${GOWA_BASIC_AUTH_USER:-iqbill}
-  GOWA_BASIC_AUTH_PASSWORD: ${GOWA_BASIC_AUTH_PASSWORD:-change_me_gowa_password}
+  GOWA_BASIC_AUTH_PASSWORD: ${GOWA_BASIC_AUTH_PASSWORD:?Set GOWA_BASIC_AUTH_PASSWORD in .env before starting Docker Compose}
   GOWA_DEVICE_ID: ${GOWA_DEVICE_ID:-iqbill}
   GOWA_AUTO_SYNC: ${GOWA_AUTO_SYNC:-true}
   GOWA_FORCE_SYNC: ${GOWA_FORCE_SYNC:-false}
@@ -54,6 +54,8 @@ services:
     restart: unless-stopped
     ports:
       - "${APP_PORT:-8080}:80"
+    volumes:
+      - fpm_sock:/run/php-fpm
     depends_on:
       app:
         condition: service_healthy
@@ -64,7 +66,7 @@ services:
       retries: 5
       start_period: 15s
     networks:
-      - iqbill_net
+      - frontend_net
 
   app:
     build:
@@ -77,6 +79,7 @@ services:
       CONTAINER_ROLE: app
     volumes:
       - app_storage:/var/www/html/storage/app
+      - fpm_sock:/run/php-fpm
     depends_on:
       db:
         condition: service_healthy
@@ -85,13 +88,15 @@ services:
       gowa:
         condition: service_started
     healthcheck:
-      test: ["CMD-SHELL", "php -r 'exit(@fsockopen(\"127.0.0.1\", 9000) ? 0 : 1);'"]
+      test: ["CMD-SHELL", "test -S /run/php-fpm/www.sock || exit 1"]
       interval: 15s
       timeout: 5s
       retries: 8
       start_period: 30s
     networks:
-      - iqbill_net
+      - db_net
+      - egress_net
+      - gowa_net
 
   queue:
     build:
@@ -119,7 +124,9 @@ services:
       retries: 5
       start_period: 25s
     networks:
-      - iqbill_net
+      - db_net
+      - egress_net
+      - gowa_net
 
   scheduler:
     build:
@@ -147,7 +154,8 @@ services:
       retries: 5
       start_period: 25s
     networks:
-      - iqbill_net
+      - db_net
+      - egress_net
 
   db:
     image: mysql:8.0
@@ -159,19 +167,19 @@ services:
     environment:
       MYSQL_DATABASE: ${DB_DATABASE:-iqbill}
       MYSQL_USER: ${DB_USERNAME:-iqbill}
-      MYSQL_PASSWORD: ${DB_PASSWORD:-change_me_strong_db_password}
-      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-change_me_strong_root_password}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env before starting Docker Compose}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in .env before starting Docker Compose}
       TZ: Asia/Jakarta
     volumes:
       - mysql_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      test: ["CMD-SHELL", "MYSQL_PWD=\"$$MYSQL_ROOT_PASSWORD\" mysqladmin ping -h 127.0.0.1 -uroot --silent"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 30s
     networks:
-      - iqbill_net
+      - db_net
 
   redis:
     image: redis:7-alpine
@@ -182,27 +190,28 @@ services:
       - -c
       - exec redis-server --appendonly yes --requirepass "$$REDIS_PASSWORD"
     environment:
-      REDIS_PASSWORD: ${REDIS_PASSWORD:-change_me_strong_redis_password}
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in .env before starting Docker Compose}
     volumes:
       - redis_data:/data
     healthcheck:
-      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      test: ["CMD-SHELL", "REDISCLI_AUTH=\"$$REDIS_PASSWORD\" redis-cli ping | grep -q PONG"]
       interval: 10s
       timeout: 5s
       retries: 8
       start_period: 10s
     networks:
-      - iqbill_net
+      - db_net
 
   gowa:
-    image: aldinokemal2104/go-whatsapp-web-multidevice:latest
+    # Pin to an explicit release tag (or immutable @sha256 digest via GOWA_IMAGE)
+    image: ${GOWA_IMAGE:-aldinokemal2104/go-whatsapp-web-multidevice:latest}
     container_name: iqbill_gowa
     restart: unless-stopped
     ports:
       - "${GOWA_HOST_BIND:-127.0.0.1}:${GOWA_HOST_PORT:-3000}:3000"
     environment:
       APP_PORT: 3000
-      APP_BASIC_AUTH: "${GOWA_BASIC_AUTH_USER:-iqbill}:${GOWA_BASIC_AUTH_PASSWORD:-change_me_gowa_password}"
+      APP_BASIC_AUTH: "${GOWA_BASIC_AUTH_USER:-iqbill}:${GOWA_BASIC_AUTH_PASSWORD:?Set GOWA_BASIC_AUTH_PASSWORD in .env before starting Docker Compose}"
       APP_DEBUG: ${GOWA_DEBUG:-false}
       APP_OS: ${GOWA_DEVICE_OS:-IQ Bill}
       WHATSAPP_ACCOUNT_VALIDATION: ${GOWA_ACCOUNT_VALIDATION:-false}
@@ -210,15 +219,23 @@ services:
       - gowa_storages:/app/storages
       - gowa_statics:/app/statics
     networks:
-      - iqbill_net
+      - gowa_net
 
 volumes:
   app_storage:
+  fpm_sock:
   mysql_data:
   redis_data:
   gowa_storages:
   gowa_statics:
 
 networks:
-  iqbill_net:
+  frontend_net:
+    driver: bridge
+  db_net:
+    driver: bridge
+    internal: true
+  egress_net:
+    driver: bridge
+  gowa_net:
     driver: bridge

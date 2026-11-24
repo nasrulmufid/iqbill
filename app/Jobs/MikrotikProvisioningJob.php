@@ -31,6 +31,7 @@ class MikrotikProvisioningJob implements ShouldQueue
         public readonly string $action,
         public readonly string $triggerSource = 'webhook_paid'
     ) {
+        $this->onQueue('provisioning');
     }
 
     public function handle(MikrotikProvisioningService $service, TelegramNotificationService $telegram): void

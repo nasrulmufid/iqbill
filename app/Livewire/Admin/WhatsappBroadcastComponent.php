@@ -13,6 +13,7 @@ use App\Models\WhatsappBroadcast;
 use App\Services\Notification\WhatsappBroadcastService;
 use App\Services\Notification\WhatsAppService;
 use Illuminate\Http\Request;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\View\View;
 use InvalidArgumentException;
 use Livewire\Component;
@@ -34,7 +35,7 @@ class WhatsappBroadcastComponent extends Component
 
     public string $messageBody = '';
 
-    public string $dispatchMode = 'sync';
+    public string $dispatchMode = 'queue';
 
     public int $delaySeconds = 2;
 
@@ -49,6 +50,15 @@ class WhatsappBroadcastComponent extends Component
     public ?string $statusMessage = null;
 
     public ?string $errorMessage = null;
+
+    public function boot(): void
+    {
+        $user = auth()->user();
+        abort_unless(
+            $user !== null && $user->is_active && $user->hasRole(UserRole::SuperAdmin, UserRole::Finance, UserRole::Noc),
+            403
+        );
+    }
 
     public function mount(Request $request): void
     {
@@ -147,6 +157,14 @@ class WhatsappBroadcastComponent extends Component
     {
         $this->reset(['errorMessage', 'statusMessage']);
 
+        $rateKey = 'wa-broadcast:' . (string) auth()->id();
+        if (RateLimiter::tooManyAttempts($rateKey, 5)) {
+            $seconds = RateLimiter::availableIn($rateKey);
+            $this->errorMessage = "Too many broadcast dispatches. Please wait {$seconds} seconds before trying again.";
+
+            return;
+        }
+
         $this->validate([
             'title' => ['nullable', 'string', 'max:150'],
             'segment' => ['required', 'in:all,active,isolated,unpaid_invoice,pending_installation,suspended,manual'],
@@ -165,6 +183,8 @@ class WhatsappBroadcastComponent extends Component
 
             return;
         }
+
+        RateLimiter::hit($rateKey, 60);
 
         try {
             $broadcast = $service->dispatchBroadcast(
@@ -207,6 +227,15 @@ class WhatsappBroadcastComponent extends Component
     public function retryFailedBroadcast(int $broadcastId, WhatsappBroadcastService $service): void
     {
         $this->reset(['errorMessage', 'statusMessage']);
+
+        $rateKey = 'wa-broadcast-retry:' . (string) auth()->id();
+        if (RateLimiter::tooManyAttempts($rateKey, 5)) {
+            $seconds = RateLimiter::availableIn($rateKey);
+            $this->errorMessage = "Too many retry requests. Please wait {$seconds} seconds before trying again.";
+
+            return;
+        }
+        RateLimiter::hit($rateKey, 60);
 
         $broadcast = WhatsappBroadcast::query()->find($broadcastId);
         if (!$broadcast) {

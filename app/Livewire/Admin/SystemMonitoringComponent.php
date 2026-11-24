@@ -4,7 +4,9 @@ declare(strict_types=1);
 
 namespace App\Livewire\Admin;
 
+use App\Enums\UserRole;
 use App\Services\Monitoring\SystemHealthService;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\View\View;
 use Livewire\Component;
 
@@ -29,6 +31,15 @@ class SystemMonitoringComponent extends Component
 
     public string $pingNotice = '';
 
+    public function boot(): void
+    {
+        $user = auth()->user();
+        abort_unless(
+            $user !== null && $user->is_active && $user->hasRole(UserRole::SuperAdmin, UserRole::Finance, UserRole::Noc),
+            403
+        );
+    }
+
     public function mount(): void
     {
         $this->refreshMetrics();
@@ -46,6 +57,23 @@ class SystemMonitoringComponent extends Component
 
     public function pingQueueWorker(): void
     {
+        $rateKey = 'queue-worker-ping:' . (string) auth()->id();
+        if (RateLimiter::tooManyAttempts($rateKey, 3)) {
+            $seconds = RateLimiter::availableIn($rateKey);
+            $this->pingNotice = "Please wait {$seconds} seconds before dispatching another worker ping.";
+
+            return;
+        }
+
+        if (SystemHealthService::hasPendingWorkerPing()) {
+            $this->refreshMetrics();
+            $this->pingNotice = 'A worker ping is already pending. Please wait for the queue worker to process it.';
+
+            return;
+        }
+
+        RateLimiter::hit($rateKey, 60);
+
         $service = app(SystemHealthService::class);
         $service->dispatchWorkerPing('manual');
 

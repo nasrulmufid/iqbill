@@ -30,27 +30,45 @@ class VerifySumopodWebhook
         );
 
         if (!$result['valid']) {
-            $payload = json_decode($request->getContent(), true);
-            if (!is_array($payload)) {
-                $payload = ['raw' => $request->getContent()];
-            }
+            $rawBody = $request->getContent();
+            $rawLength = strlen($rawBody);
+            $decoded = $rawLength <= 65536 ? json_decode($rawBody, true) : null;
+
+            $extractString = static function (mixed $value, int $maxLength): ?string {
+                if (!is_scalar($value)) {
+                    return null;
+                }
+                $str = trim((string) $value);
+
+                return $str === '' ? null : mb_substr($str, 0, $maxLength);
+            };
+
+            $externalRef = is_array($decoded) ? $extractString(data_get($decoded, 'data.payment_id'), 100) : null;
+            $paymentCode = is_array($decoded) ? $extractString(data_get($decoded, 'data.order_id'), 60) : null;
+            $eventType = (is_array($decoded) ? $extractString(data_get($decoded, 'event_type'), 60) : null) ?? 'unknown';
+
+            $loggedPayload = [
+                'truncated' => $rawLength > 8192,
+                'byte_length' => $rawLength,
+                'preview' => substr($rawBody, 0, 8192),
+            ];
 
             PaymentWebhookLog::query()->create([
                 'svix_id' => null,
-                'external_reference' => data_get($payload, 'data.payment_id'),
-                'payment_code' => data_get($payload, 'data.order_id'),
-                'event_type' => (string) data_get($payload, 'event_type', 'unknown'),
+                'external_reference' => $externalRef,
+                'payment_code' => $paymentCode,
+                'event_type' => $eventType,
                 'verification_method' => $result['method'],
                 'signature_valid' => false,
                 'http_status_returned' => 401,
                 'processing_status' => 'rejected_invalid_auth',
                 'error_message' => $result['reason'],
                 'headers_json' => [
-                    'svix-id' => $request->header('svix-id'),
-                    'svix-timestamp' => $request->header('svix-timestamp'),
-                    'user-agent' => $request->userAgent(),
+                    'svix-id' => $extractString($request->header('svix-id'), 120),
+                    'svix-timestamp' => $extractString($request->header('svix-timestamp'), 40),
+                    'user-agent' => $extractString($request->userAgent(), 200),
                 ],
-                'payload_json' => $payload,
+                'payload_json' => $loggedPayload,
                 'processed_at' => now(),
                 'created_at' => now(),
             ]);

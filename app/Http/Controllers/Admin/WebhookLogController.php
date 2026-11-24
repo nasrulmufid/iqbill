@@ -13,6 +13,20 @@ class WebhookLogController extends Controller
     public function index(): View
     {
         $logs = PaymentWebhookLog::query()
+            ->select([
+                'id',
+                'svix_id',
+                'external_reference',
+                'payment_code',
+                'event_type',
+                'verification_method',
+                'signature_valid',
+                'http_status_returned',
+                'processing_status',
+                'error_message',
+                'processed_at',
+                'created_at',
+            ])
             ->latest('id')
             ->paginate(25);
 

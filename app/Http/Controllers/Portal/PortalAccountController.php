@@ -52,10 +52,10 @@ class PortalAccountController extends Controller
 
         $data = $request->validate([
             'current_password' => ['required', 'string'],
-            'password' => ['required', 'string', 'min:6', 'confirmed'],
+            'password' => ['required', 'string', 'min:8', 'confirmed'],
         ], [
             'password.confirmed' => 'New password confirmation does not match.',
-            'password.min' => 'New password must be at least 6 characters.',
+            'password.min' => 'New password must be at least 8 characters.',
         ]);
 
         if (!Hash::check($data['current_password'], (string) $user->password)) {
@@ -67,6 +67,10 @@ class PortalAccountController extends Controller
         $user->update([
             'password' => Hash::make($data['password']),
         ]);
+
+        $request->session()->regenerate();
+        $request->session()->put('password_hash_' . auth()->getDefaultDriver(), $user->getAuthPassword());
+        $user->revokeAllSessions($request->session()->getId());
 
         return back()->with('success', 'Portal password updated successfully.');
     }

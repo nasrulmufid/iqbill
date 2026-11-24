@@ -199,7 +199,9 @@ test('Customer can filter invoices, download valid PDF invoice, preview print fa
         ->assertSee('Print Invoice')
         ->assertSee('2.243');
 
-    // IDOR protection
+    // IDOR protection (fresh session for userB so AuthenticateSession evaluates userB's own session)
+    $this->flushSession();
+
     $this->actingAs($ctx['userB'])
         ->get(route('portal.invoices.download', $ctx['paidInvoice']))
         ->assertForbidden();
