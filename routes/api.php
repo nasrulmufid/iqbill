@@ -11,7 +11,7 @@ Route::get('/health', [HealthController::class, 'health'])
     ->middleware('throttle:30,1')
     ->name('api.health');
 
-Route::middleware(['web', 'auth', 'active', 'role:super_admin,finance,noc'])
+Route::middleware(['web', 'auth', 'active', 'password.changed', 'role:super_admin,finance,noc'])
     ->get('/admin/metrics', [HealthController::class, 'metrics'])
     ->name('api.admin.metrics');
 

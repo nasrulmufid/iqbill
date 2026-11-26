@@ -68,6 +68,10 @@ class LoginController extends Controller
 
         $user?->forceFill(['last_login_at' => now()])->save();
 
+        if ($user?->requiresInitialPasswordChange()) {
+            return redirect()->route('admin.password.force.edit');
+        }
+
         if ($user?->role->isStaff()) {
             return redirect()->intended(route('admin.dashboard'));
         }

@@ -26,6 +26,8 @@ class User extends Authenticatable
         'password',
         'role',
         'is_active',
+        'must_change_password',
+        'password_changed_at',
         'last_login_at',
     ];
 
@@ -41,8 +43,21 @@ class User extends Authenticatable
             'password' => 'hashed',
             'role' => UserRole::class,
             'is_active' => 'boolean',
+            'must_change_password' => 'boolean',
+            'password_changed_at' => 'datetime',
             'last_login_at' => 'datetime',
         ];
+    }
+
+    /**
+     * Only the initial Super Admin seeded on first deployment requires a mandatory
+     * one-time password change before accessing the application.
+     */
+    public function requiresInitialPasswordChange(): bool
+    {
+        return $this->role === UserRole::SuperAdmin
+            && (bool) $this->must_change_password
+            && $this->password_changed_at === null;
     }
 
     public function customer(): HasOne

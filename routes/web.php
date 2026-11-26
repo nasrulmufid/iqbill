@@ -11,6 +11,7 @@ use App\Http\Controllers\Admin\PaymentSettingsController;
 use App\Http\Controllers\Admin\TicketController as AdminTicketController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Admin\WebhookLogController;
+use App\Http\Controllers\Auth\ForcePasswordChangeController;
 use App\Http\Controllers\Auth\LoginController;
 use App\Http\Controllers\Portal\PortalAccountController;
 use App\Http\Controllers\Portal\PortalDashboardController;
@@ -29,6 +30,10 @@ use Illuminate\Support\Facades\Route;
 
 Route::get('/', function () {
     if (Auth::check()) {
+        if (Auth::user()->requiresInitialPasswordChange()) {
+            return redirect()->route('admin.password.force.edit');
+        }
+
         return Auth::user()->role->isStaff()
             ? redirect()->route('admin.dashboard')
             : redirect()->route('portal.dashboard');
@@ -51,7 +56,15 @@ Route::post('/logout', [LoginController::class, 'logout'])
     ->middleware('auth')
     ->name('logout');
 
-Route::middleware(['auth', 'active'])->prefix('portal')->as('portal.')->group(function () {
+Route::middleware(['auth', 'active', 'role:super_admin'])->prefix('admin')->as('admin.')->group(function () {
+    Route::get('/setup-password', [ForcePasswordChangeController::class, 'edit'])
+        ->name('password.force.edit');
+    Route::put('/setup-password', [ForcePasswordChangeController::class, 'update'])
+        ->middleware('throttle:10,1')
+        ->name('password.force.update');
+});
+
+Route::middleware(['auth', 'active', 'password.changed'])->prefix('portal')->as('portal.')->group(function () {
     Route::get('/dashboard', PortalDashboardController::class)->name('dashboard');
     Route::get('/invoices', [PortalInvoiceController::class, 'index'])->name('invoices.index');
     Route::get('/invoices/{invoice}/download', [PortalInvoiceController::class, 'download'])->name('invoices.download');
@@ -74,7 +87,7 @@ Route::middleware(['auth', 'active'])->prefix('portal')->as('portal.')->group(fu
         ->name('account.password');
 });
 
-Route::middleware(['auth', 'active', 'role:super_admin,finance,noc'])->prefix('admin')->as('admin.')->group(function () {
+Route::middleware(['auth', 'active', 'password.changed', 'role:super_admin,finance,noc'])->prefix('admin')->as('admin.')->group(function () {
     Route::get('/dashboard', AdminDashboardController::class)->name('dashboard');
     Route::get('/invoices', [AdminInvoiceController::class, 'index'])->name('invoices.index');
     Route::get('/invoices/{invoice}', [AdminInvoiceController::class, 'show'])->name('invoices.show');

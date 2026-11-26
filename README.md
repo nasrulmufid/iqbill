@@ -78,6 +78,27 @@ flowchart LR
 
 ---
 
+## Automated Linux Installer & Uninstaller (`iqbill.sh`)
+
+For Ubuntu, Debian, CentOS, RHEL, Rocky Linux, AlmaLinux, and Fedora servers, use the bundled production terminal manager [`iqbill.sh`](iqbill.sh). It automatically:
+- Validates OS distribution, version, 64-bit architecture (`amd64`/`arm64`), RAM, disk space, and internet connectivity.
+- Installs the latest official **Docker Engine**, **CLI**, **containerd**, **Docker Buildx plugin**, and **Docker Compose v2 plugin** following the official Docker documentation sequence for your Linux distribution.
+- Checks for host port conflicts (`APP_PORT`, `GOWA_HOST_PORT`), generates strong random secrets in `.env` (`chmod 600`), sets `SESSION_SECURE_COOKIE` automatically based on HTTP vs HTTPS `APP_URL`, builds & launches all 7 containers, and polls container health with detailed logging in `/var/log/iqbill-*.log`.
+- Provides a safe, step-by-step uninstaller with optional pre-wipe MySQL SQL backup, volume/image cleanup, and optional Docker Engine removal.
+
+```bash
+# Interactive menu (Install / Uninstall / Status)
+sudo bash iqbill.sh
+
+# Direct CLI commands
+sudo bash iqbill.sh install
+sudo bash iqbill.sh status
+sudo bash iqbill.sh uninstall
+sudo bash iqbill.sh --help
+```
+
+---
+
 ## Quick Production Deployment (Docker Compose)
 
 ### 1. Prerequisites
@@ -127,13 +148,14 @@ On first launch, `iqbill_app` automatically:
 5. Caches config, routes, and Blade views and starts `php-fpm`.
 6. Once migrations complete, `iqbill_queue` and `iqbill_scheduler` start automatically.
 
-### 4. Link WhatsApp via Bundled Go-WhatsApp (GOWA)
-No manual container IP lookup is required:
-1. Sign in to IQ Bill (`https://your-domain` or `http://localhost:8080`) using your `ADMIN_EMAIL` / `ADMIN_PASSWORD`.
-2. Navigate to **WhatsApp -> Go-WhatsApp Device** (`/admin/whatsapp/device`).
-3. Verify `GOWA Base URL` is pre-filled as `http://gowa:3000` with your `GOWA_BASIC_AUTH_USER`.
-4. Click **Show Login QR** (or enter a phone number and click **Request Code** for Pairing Code login) and scan with **WhatsApp -> Linked Devices**.
-5. Test delivery immediately using the **Send GOWA Test Message** card.
+### 4. First-Login Mandatory Super Admin Password Change & Go-WhatsApp Pairing
+On a **first-time deployment**, IQ Bill enforces a mandatory one-time Super Admin password change before granting access to the admin panel (`ADMIN_REQUIRE_PASSWORD_CHANGE=true`):
+1. Sign in to IQ Bill (`https://your-domain` or `http://<server-ip>:8080`) using your initial `ADMIN_EMAIL` / `ADMIN_PASSWORD`.
+2. You will be redirected automatically to `/admin/setup-password` to set a strong new Super Admin password (minimum 12 characters with letters and numbers). Once completed, this screen never appears again.
+3. Navigate to **WhatsApp -> Go-WhatsApp Device** (`/admin/whatsapp/device`).
+4. Verify `GOWA Base URL` is pre-filled as `http://gowa:3000` with your `GOWA_BASIC_AUTH_USER`.
+5. Click **Show Login QR** (or enter a phone number and click **Request Code** for Pairing Code login) and scan with **WhatsApp -> Linked Devices**.
+6. Test delivery immediately using the **Send GOWA Test Message** card.
 
 > **Security Note:** By default, `docker-compose.yml` binds GOWA's port to loopback only (`${GOWA_HOST_BIND:-127.0.0.1}:${GOWA_HOST_PORT:-3000}:3000`) so the Go-WhatsApp UI/API is never exposed directly to the public internet while `iqbill_app` and `iqbill_queue` still communicate internally over `http://gowa:3000`.
 
