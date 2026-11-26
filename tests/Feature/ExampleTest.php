@@ -185,6 +185,8 @@ class ExampleTest extends TestCase
         $response->assertOk()
             ->assertSee('Monthly Revenue')
             ->assertSee('Recent Invoices')
+            ->assertSee('metricValue(item)', false)
+            ->assertDontSee('valueOf(item)', false)
             ->assertSee($unpaidInvoice->invoice_number)
             ->assertSee(route('admin.finance.index'))
             ->assertDontSee('Sumopod Webhook Activity')

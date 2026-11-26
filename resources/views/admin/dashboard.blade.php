@@ -208,11 +208,12 @@
                 get visibleItems() {
                     return this.range === 6 ? this.items.slice(-6) : this.items;
                 },
-                valueOf(item) {
+                metricValue(item) {
+                    if (!item) return 0;
                     return Number(this.metric === 'gross' ? item.gross : item.net) || 0;
                 },
                 get totalPeriod() {
-                    return this.visibleItems.reduce((sum, item) => sum + this.valueOf(item), 0);
+                    return this.visibleItems.reduce((sum, item) => sum + this.metricValue(item), 0);
                 },
                 get totalTransactions() {
                     return this.visibleItems.reduce((sum, item) => sum + (Number(item.count) || 0), 0);
@@ -227,10 +228,10 @@
                     return this.items.length >= 2 ? this.items[this.items.length - 2] : null;
                 },
                 get currentValue() {
-                    return this.currentItem ? this.valueOf(this.currentItem) : 0;
+                    return this.currentItem ? this.metricValue(this.currentItem) : 0;
                 },
                 get prevValue() {
-                    return this.prevItem ? this.valueOf(this.prevItem) : 0;
+                    return this.prevItem ? this.metricValue(this.prevItem) : 0;
                 },
                 get momChange() {
                     const cur = this.currentValue;
@@ -255,7 +256,7 @@
                     let best = null;
                     let bestVal = 0;
                     for (const item of this.visibleItems) {
-                        const v = this.valueOf(item);
+                        const v = this.metricValue(item);
                         if (v > bestVal) {
                             bestVal = v;
                             best = item;
@@ -266,7 +267,7 @@
                 get yMax() {
                     let raw = 0;
                     for (const item of this.visibleItems) {
-                        const v = this.valueOf(item);
+                        const v = this.metricValue(item);
                         if (v > raw) raw = v;
                     }
                     if (raw <= 0) return 1000000;
@@ -281,7 +282,7 @@
                     return [m, m * 0.75, m * 0.5, m * 0.25, 0];
                 },
                 barHeightPercent(item) {
-                    const v = this.valueOf(item);
+                    const v = this.metricValue(item);
                     if (v <= 0) return 0;
                     return Math.max(4, Math.min(100, (v / this.yMax) * 100));
                 },
@@ -420,7 +421,7 @@
                             </div>
 
                             {{-- Columns --}}
-                            <div class="relative z-20 grid h-full gap-1.5 sm:gap-2.5 items-end"
+                            <div class="relative z-20 grid grid-rows-1 h-full gap-1.5 sm:gap-2.5"
                                  :class="range === 6 ? 'grid-cols-6' : 'grid-cols-12'">
                                 <template x-for="(item, idx) in visibleItems" :key="item.key">
                                     <div class="group relative h-full flex flex-col justify-end items-center rounded-t-lg transition-colors focus:outline-none cursor-pointer"
@@ -464,13 +465,13 @@
                                         </div>
 
                                         {{-- Bar --}}
-                                        <div class="w-full max-w-[34px] transition-all duration-300"
-                                             :class="valueOf(item) > 0
+                                        <div class="w-full max-w-[34px] shrink-0 transition-all duration-300"
+                                             :class="metricValue(item) > 0
                                                  ? (item.is_current
                                                      ? (metric === 'gross' ? 'rounded-t-lg shadow-sm bg-gradient-to-t from-sky-600 to-sky-400 ring-2 ring-sky-200/70' : 'rounded-t-lg shadow-sm bg-gradient-to-t from-emerald-600 to-emerald-400 ring-2 ring-emerald-200/70')
                                                      : (metric === 'gross' ? 'rounded-t-lg shadow-sm bg-gradient-to-t from-violet-600 to-indigo-400' : 'rounded-t-lg shadow-sm bg-gradient-to-t from-indigo-600 to-indigo-400'))
                                                  : (item.is_current ? 'rounded-full bg-emerald-300' : 'rounded-full bg-slate-200')"
-                                             :style="valueOf(item) > 0 ? ('height: ' + barHeightPercent(item) + '%') : 'height: 3px'">
+                                             :style="metricValue(item) > 0 ? ('height: ' + barHeightPercent(item) + '%') : 'height: 3px'">
                                         </div>
                                     </div>
                                 </template>
