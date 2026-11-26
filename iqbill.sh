@@ -14,7 +14,7 @@ set -Eeuo pipefail
 readonly APP_BRAND="IQ Bill"
 readonly DEFAULT_REPO_URL="https://github.com/nasrulmufid/iqbill.git"
 readonly DEFAULT_INSTALL_DIR="/opt/iqbill"
-readonly DEFAULT_GOWA_IMAGE="aldinokemal2104/go-whatsapp-web-multidevice:v6.10.0"
+readonly DEFAULT_GOWA_IMAGE="aldinokemal2104/go-whatsapp-web-multidevice:latest"
 readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 readonly TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 
