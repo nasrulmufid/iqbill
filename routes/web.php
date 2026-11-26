@@ -8,6 +8,7 @@ use App\Http\Controllers\Admin\InvoiceController as AdminInvoiceController;
 use App\Http\Controllers\Admin\MikrotikToolsController;
 use App\Http\Controllers\Admin\OperationsController;
 use App\Http\Controllers\Admin\PaymentSettingsController;
+use App\Http\Controllers\Admin\SystemBackupController;
 use App\Http\Controllers\Admin\TicketController as AdminTicketController;
 use App\Http\Controllers\Admin\UserController;
 use App\Http\Controllers\Admin\WebhookLogController;
@@ -196,5 +197,23 @@ Route::middleware(['auth', 'active', 'password.changed', 'role:super_admin,finan
         Route::put('/users/{user}', [UserController::class, 'update'])->name('users.update');
         Route::patch('/users/{user}/toggle', [UserController::class, 'toggleActive'])->name('users.toggle');
         Route::delete('/users/{user}', [UserController::class, 'destroy'])->name('users.destroy');
+
+        // System Database & App Configuration Backup / Restore
+        Route::get('/system-backups', [SystemBackupController::class, 'index'])->name('system-backups.index');
+        Route::post('/system-backups', [SystemBackupController::class, 'store'])
+            ->middleware('throttle:10,1')
+            ->name('system-backups.store');
+        Route::post('/system-backups/restore-upload', [SystemBackupController::class, 'restoreUpload'])
+            ->middleware('throttle:5,1')
+            ->name('system-backups.restore-upload');
+        Route::get('/system-backups/{backup}/download', [SystemBackupController::class, 'download'])
+            ->middleware('throttle:10,1')
+            ->name('system-backups.download');
+        Route::post('/system-backups/{backup}/restore', [SystemBackupController::class, 'restoreStored'])
+            ->middleware('throttle:5,1')
+            ->name('system-backups.restore');
+        Route::delete('/system-backups/{backup}', [SystemBackupController::class, 'destroy'])
+            ->middleware('throttle:10,1')
+            ->name('system-backups.destroy');
     });
 });
