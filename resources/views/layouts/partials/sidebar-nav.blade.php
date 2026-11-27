@@ -14,11 +14,11 @@
 
 <div class="h-16 px-6 flex items-center justify-between gap-3 border-b border-slate-800/80 shrink-0">
     <a href="{{ $user?->role->isStaff() ? route('admin.dashboard') : route('portal.dashboard') }}" class="flex items-center gap-3 min-w-0">
-        <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-md shadow-indigo-950/50">
-            <svg class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                <path stroke-linecap="round" stroke-linejoin="round" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
-            </svg>
-        </span>
+        <img src="{{ asset('images/iqbill-logo-192.png') }}"
+             alt="{{ $companyName }}"
+             width="36"
+             height="36"
+             class="h-9 w-9 shrink-0 rounded-full object-contain ring-1 ring-white/15 shadow-md shadow-indigo-950/50">
         <div class="min-w-0">
             <div class="truncate text-sm font-bold text-white tracking-tight">{{ $companyName }}</div>
             <div class="text-[11px] font-medium text-slate-400">{{ $user?->role->isStaff() ? 'Billing & MikroTik API' : 'Customer Portal' }}</div>

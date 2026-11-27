@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Invoice {{ $invoice->invoice_number }} — {{ $company->company_name ?: 'IQ Bill' }}</title>
+    @include('layouts.partials.favicon')
     @vite(['resources/css/app.css'])
     <style>
         @media print {
@@ -43,14 +44,21 @@
     {{-- A4 Sheet --}}
     <div class="invoice-sheet bg-white rounded-2xl border border-slate-200 shadow-lg overflow-hidden">
         <div class="bg-slate-900 text-white px-8 py-7 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div>
-                <h1 class="text-xl font-bold tracking-tight">{{ $company->company_name ?: 'IQ Bill' }}</h1>
-                @if($company->company_address)
-                    <p class="text-xs text-slate-300 mt-1">{{ $company->company_address }}</p>
-                @endif
-                @if($company->company_phone)
-                    <p class="text-xs text-slate-400 font-mono mt-0.5">Phone / WA: {{ $company->company_phone }}</p>
-                @endif
+            <div class="flex items-center gap-4">
+                <img src="{{ asset('images/iqbill-logo-192.png') }}"
+                     alt="{{ $company->company_name ?: 'IQ Bill' }}"
+                     width="48"
+                     height="48"
+                     class="h-12 w-12 shrink-0 rounded-full object-contain ring-1 ring-white/20">
+                <div>
+                    <h1 class="text-xl font-bold tracking-tight">{{ $company->company_name ?: 'IQ Bill' }}</h1>
+                    @if($company->company_address)
+                        <p class="text-xs text-slate-300 mt-1">{{ $company->company_address }}</p>
+                    @endif
+                    @if($company->company_phone)
+                        <p class="text-xs text-slate-400 font-mono mt-0.5">Phone / WA: {{ $company->company_phone }}</p>
+                    @endif
+                </div>
             </div>
             <div class="sm:text-right">
                 <div class="text-2xl font-extrabold tracking-wide">INVOICE</div>

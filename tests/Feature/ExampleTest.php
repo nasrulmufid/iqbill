@@ -219,4 +219,37 @@ class ExampleTest extends TestCase
             ->assertDontSee('Aktivitas Webhook Sumopod')
             ->assertDontSee(route('admin.finance.index'));
     }
+
+    public function test_logo_and_favicon_assets_exist_and_render_across_layouts(): void
+    {
+        foreach ([
+            'favicon.ico',
+            'favicon-16x16.png',
+            'favicon-32x32.png',
+            'apple-touch-icon.png',
+            'images/iqbill-logo.png',
+            'images/iqbill-logo-192.png',
+        ] as $assetPath) {
+            $fullPath = public_path($assetPath);
+            $this->assertFileExists($fullPath);
+            $this->assertGreaterThan(0, filesize($fullPath));
+        }
+
+        $this->get(route('login'))
+            ->assertOk()
+            ->assertSee('images/iqbill-logo-192.png', false)
+            ->assertSee('favicon-32x32.png', false)
+            ->assertSee('apple-touch-icon.png', false);
+
+        $admin = User::factory()->create([
+            'role' => UserRole::SuperAdmin,
+            'is_active' => true,
+        ]);
+
+        $this->actingAs($admin)->get(route('admin.dashboard'))
+            ->assertOk()
+            ->assertSee('images/iqbill-logo-192.png', false)
+            ->assertSee('favicon-32x32.png', false)
+            ->assertSee('apple-touch-icon.png', false);
+    }
 }

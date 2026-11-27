@@ -9,11 +9,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>{{ $code }} — {{ $heading }}</title>
+    @include('layouts.partials.favicon')
     @vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
 <body class="min-h-screen bg-slate-50 flex items-center justify-center p-4 text-slate-800 antialiased">
     <div class="max-w-md w-full bg-white rounded-2xl border border-slate-200 shadow-sm p-8 text-center">
-        <div class="mx-auto inline-flex h-14 w-14 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 font-mono text-xl font-bold">
+        <img src="{{ asset('images/iqbill-logo-192.png') }}"
+             alt="{{ config('app.name', 'IQ Bill') }}"
+             width="44"
+             height="44"
+             class="mx-auto mb-4 h-11 w-11 rounded-full object-contain">
+        <div class="mx-auto inline-flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-50 text-indigo-600 font-mono text-lg font-bold">
             {{ $code }}
         </div>
         <h1 class="mt-4 text-xl font-bold text-slate-900">{{ $heading }}</h1>

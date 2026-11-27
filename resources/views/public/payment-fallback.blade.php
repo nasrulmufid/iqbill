@@ -4,10 +4,15 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Connecting to Payment Gateway - {{ $invoice->invoice_number }}</title>
+    @include('layouts.partials.favicon')
     @vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
 <body class="min-h-screen bg-slate-50 flex items-center justify-center p-4 text-slate-800">
     <div class="w-full max-w-md bg-white rounded-2xl shadow-sm border border-slate-200 p-6 sm:p-8 text-center">
+        <div class="mb-5 flex items-center justify-center gap-2">
+            <img src="{{ asset('images/iqbill-logo-192.png') }}" alt="IQ Bill" width="28" height="28" class="h-7 w-7 rounded-full object-contain">
+            <span class="text-sm font-bold text-slate-800 tracking-tight">{{ $company->company_name ?? config('app.name', 'IQ Bill') }}</span>
+        </div>
         <div class="mx-auto mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-amber-100 text-amber-600">
             <svg class="h-8 w-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
                 <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M10.29 3.86l-7.1 12.27A2 2 0 004.92 19h14.16a2 2 0 001.73-2.87l-7.1-12.27a2 2 0 00-3.42 0z" />

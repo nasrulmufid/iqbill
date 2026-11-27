@@ -4,16 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sign In — IQ Bill</title>
+    @include('layouts.partials.favicon')
     @vite(['resources/css/app.css', 'resources/js/app.js'])
 </head>
 <body class="min-h-screen bg-slate-950 bg-gradient-to-br from-slate-950 via-slate-900 to-indigo-950 flex items-center justify-center p-4 antialiased">
     <div class="w-full max-w-md space-y-6">
         <div class="text-center">
-            <div class="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-indigo-500 to-violet-600 text-white shadow-lg shadow-indigo-500/30">
-                <svg class="h-7 w-7" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-                    <path stroke-linecap="round" stroke-linejoin="round" d="M8.111 16.404a5.5 5.5 0 017.778 0M12 20h.01m-7.08-7.071c3.904-3.905 10.236-3.905 14.14 0M1.394 9.393c5.857-5.857 15.355-5.857 21.213 0" />
-                </svg>
-            </div>
+            <img src="{{ asset('images/iqbill-logo-192.png') }}"
+                 alt="IQ Bill Logo"
+                 width="64"
+                 height="64"
+                 class="mx-auto h-16 w-16 rounded-full object-contain ring-2 ring-white/20 shadow-lg shadow-indigo-950/60">
             <h1 class="mt-4 text-2xl font-bold text-white tracking-tight">IQ Bill</h1>
             <p class="mt-1 text-xs font-medium text-indigo-300">Billing RT/RW Net &amp; Management PPPOE Mikrotik REST API</p>
             <p class="mt-1.5 text-sm text-slate-400">Sign in to Customer Portal or Operations Backoffice</p>
