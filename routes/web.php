@@ -203,12 +203,21 @@ Route::middleware(['auth', 'active', 'password.changed', 'role:super_admin,finan
         Route::post('/system-backups', [SystemBackupController::class, 'store'])
             ->middleware('throttle:10,1')
             ->name('system-backups.store');
+        Route::put('/system-backups/schedule', [SystemBackupController::class, 'updateSchedule'])
+            ->middleware('throttle:10,1')
+            ->name('system-backups.schedule.update');
+        Route::post('/system-backups/run-now', [SystemBackupController::class, 'runAutoNow'])
+            ->middleware('throttle:5,1')
+            ->name('system-backups.run-now');
         Route::post('/system-backups/restore-upload', [SystemBackupController::class, 'restoreUpload'])
             ->middleware('throttle:5,1')
             ->name('system-backups.restore-upload');
         Route::get('/system-backups/{backup}/download', [SystemBackupController::class, 'download'])
             ->middleware('throttle:10,1')
             ->name('system-backups.download');
+        Route::post('/system-backups/{backup}/send-telegram', [SystemBackupController::class, 'sendToTelegram'])
+            ->middleware('throttle:5,1')
+            ->name('system-backups.send-telegram');
         Route::post('/system-backups/{backup}/restore', [SystemBackupController::class, 'restoreStored'])
             ->middleware('throttle:5,1')
             ->name('system-backups.restore');

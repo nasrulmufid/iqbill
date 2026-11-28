@@ -3,6 +3,7 @@
 @php
     $formContext = old('form_context', '');
     $isCreateError = $errors->any() && $formContext === 'create_backup';
+    $isScheduleError = $errors->any() && $formContext === 'auto_backup_schedule';
     $isRestoreUploadError = $errors->any() && $formContext === 'restore_upload';
     $isRestoreStoredError = $errors->any() && $formContext === 'restore_stored';
 
@@ -30,6 +31,34 @@
 
         return $bytes . ' B';
     };
+
+    $scheduleOptions = [
+        'daily' => 'Daily (Once a day)',
+        'weekly' => 'Weekly (Selected day)',
+        'monthly' => 'Monthly (Selected date)',
+        'every_12_hours' => 'Every 12 Hours (00:00 & 12:00 WIB)',
+        'every_6_hours' => 'Every 6 Hours (00:00, 06:00, 12:00, 18:00 WIB)',
+    ];
+
+    $weekDays = [
+        0 => 'Sunday',
+        1 => 'Monday',
+        2 => 'Tuesday',
+        3 => 'Wednesday',
+        4 => 'Thursday',
+        5 => 'Friday',
+        6 => 'Saturday',
+    ];
+
+    $initialAutoEnabled = $isScheduleError ? (bool) old('auto_backup_enabled', false) : (bool) $settings->auto_backup_enabled;
+    $initialAutoScope = $isScheduleError ? (string) old('auto_backup_scope', $settings->auto_backup_scope ?: 'full') : (string) ($settings->auto_backup_scope ?: 'full');
+    $initialAutoSchedule = $isScheduleError ? (string) old('auto_backup_schedule', $settings->auto_backup_schedule ?: 'daily') : (string) ($settings->auto_backup_schedule ?: 'daily');
+    $initialAutoTime = $isScheduleError ? (string) old('auto_backup_time', $settings->auto_backup_time ?: '02:00') : (string) ($settings->auto_backup_time ?: '02:00');
+    $initialAutoDayOfWeek = $isScheduleError ? (int) old('auto_backup_day_of_week', $settings->auto_backup_day_of_week ?? 0) : (int) ($settings->auto_backup_day_of_week ?? 0);
+    $initialAutoDayOfMonth = $isScheduleError ? (int) old('auto_backup_day_of_month', $settings->auto_backup_day_of_month ?? 1) : (int) ($settings->auto_backup_day_of_month ?? 1);
+    $initialAutoRetention = $isScheduleError ? (int) old('auto_backup_retention_count', $settings->auto_backup_retention_count ?? 7) : (int) ($settings->auto_backup_retention_count ?? 7);
+    $initialAutoSendTelegram = $isScheduleError ? (bool) old('auto_backup_send_telegram', false) : (bool) $settings->auto_backup_send_telegram;
+    $initialAutoTelegramChatId = $isScheduleError ? (string) old('auto_backup_telegram_chat_id', $settings->auto_backup_telegram_chat_id ?? '') : (string) ($settings->auto_backup_telegram_chat_id ?? '');
 @endphp
 
 @section('content')
@@ -43,6 +72,13 @@
         createPassphraseConfirm: '',
         showPassphrase: false,
         passphraseCopied: false,
+        autoEnabled: {{ $initialAutoEnabled ? 'true' : 'false' }},
+        autoSchedule: @js($initialAutoSchedule),
+        autoSendTelegram: {{ $initialAutoSendTelegram ? 'true' : 'false' }},
+        autoPassphrase: '',
+        autoPassphraseConfirm: '',
+        showAutoPassphrase: false,
+        autoPassphraseCopied: false,
         storedRestoreMode: @js($initialRestoreTarget['restore_mode'] ?? 'full'),
         storedConfirmPhrase: '',
         uploadRestoreMode: @js($isRestoreUploadError ? old('restore_mode', 'full') : 'full'),
@@ -52,7 +88,7 @@
             this.storedRestoreMode = item.scope === 'full' ? 'full' : 'config_only';
             this.storedConfirmPhrase = '';
         },
-        generateStrongPassphrase() {
+        randomPassphrase() {
             const charset = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789!@#$%&*_-';
             const bytes = new Uint32Array(24);
             window.crypto.getRandomValues(bytes);
@@ -60,8 +96,12 @@
             for (let i = 0; i < bytes.length; i++) {
                 out += charset[bytes[i] % charset.length];
             }
-            this.createPassphrase = out;
-            this.createPassphraseConfirm = out;
+            return out;
+        },
+        generateStrongPassphrase() {
+            const key = this.randomPassphrase();
+            this.createPassphrase = key;
+            this.createPassphraseConfirm = key;
             this.showPassphrase = true;
             this.passphraseCopied = false;
         },
@@ -70,11 +110,24 @@
             navigator.clipboard.writeText(this.createPassphrase);
             this.passphraseCopied = true;
             setTimeout(() => { this.passphraseCopied = false; }, 2500);
+        },
+        generateAutoPassphrase() {
+            const key = this.randomPassphrase();
+            this.autoPassphrase = key;
+            this.autoPassphraseConfirm = key;
+            this.showAutoPassphrase = true;
+            this.autoPassphraseCopied = false;
+        },
+        copyAutoPassphrase() {
+            if (!this.autoPassphrase) return;
+            navigator.clipboard.writeText(this.autoPassphrase);
+            this.autoPassphraseCopied = true;
+            setTimeout(() => { this.autoPassphraseCopied = false; }, 2500);
         }
      }"
      @keydown.escape.window="createOpen = false; uploadRestoreOpen = false; restoreTarget = null">
 
-    <x-page-header title="System Backup & Restore" subtitle="Create AES-256-GCM encrypted backups of the database and application configuration, or restore securely from local or uploaded archives.">
+    <x-page-header title="System Backup & Restore" subtitle="Create AES-256-GCM encrypted backups of the database and application configuration, schedule automated Telegram delivery, or restore securely.">
         <x-slot:actions>
             <button type="button" @click="uploadRestoreOpen = true; uploadConfirmPhrase = ''"
                     class="inline-flex items-center gap-1.5 rounded-xl border border-amber-300 bg-amber-50 px-3.5 py-2 text-xs font-semibold text-amber-800 hover:bg-amber-100 transition">
@@ -103,9 +156,9 @@
         <div class="space-y-1">
             <div class="font-bold text-indigo-950">End-to-End Encrypted &amp; Cross-Server Portable</div>
             <p class="text-indigo-900/90 leading-relaxed">
-                Every archive is compressed and authenticated with <strong>AES-256-GCM + PBKDF2-SHA256 (210,000 iterations)</strong> using a passphrase you provide (never stored on the server).
-                Encrypted database credentials (MikroTik, PPPoE, Sumopod, WhatsApp, Telegram, Google Maps) are securely re-encrypted with the target server's <code class="rounded bg-indigo-100 px-1 py-0.5 font-mono text-[11px]">APP_KEY</code> during restore.
-                Host infrastructure secrets (<code class="rounded bg-indigo-100 px-1 py-0.5 font-mono text-[11px]">.env</code>) are never exported or overwritten.
+                Every archive is compressed and authenticated with <strong>AES-256-GCM + PBKDF2-SHA256 (210,000 iterations)</strong>.
+                Encrypted database credentials (MikroTik, PPPoE, Sumopod, WhatsApp, Telegram, Google Maps) are automatically re-encrypted with the target server's <code class="rounded bg-indigo-100 px-1 py-0.5 font-mono text-[11px]">APP_KEY</code> during restore.
+                Telegram deliveries upload only the encrypted <code class="rounded bg-indigo-100 px-1 py-0.5 font-mono text-[11px]">.iqb</code> archive and <strong>never</strong> transmit the encryption passphrase.
             </p>
         </div>
     </div>
@@ -128,14 +181,281 @@
             <div class="mt-0.5 text-[11px] text-slate-400">{{ number_format($liveRowCount) }} record(s) &middot; {{ $dbDriver }}</div>
         </div>
         <div class="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
-            <div class="text-xs font-medium text-slate-500">Latest Backup</div>
-            <div class="mt-1 text-base font-bold text-slate-900">
-                {{ $latestBackup?->created_at?->timezone('Asia/Jakarta')->format('d M Y H:i') ?? 'Never' }}
+            <div class="text-xs font-medium text-slate-500">Auto Backup Status</div>
+            <div class="mt-1 flex items-center gap-2">
+                @if($settings->auto_backup_enabled)
+                    <span class="inline-flex items-center rounded-full bg-emerald-50 px-2.5 py-0.5 text-xs font-bold text-emerald-700 ring-1 ring-emerald-200">Enabled</span>
+                @else
+                    <span class="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-0.5 text-xs font-bold text-slate-600 ring-1 ring-slate-200">Disabled</span>
+                @endif
             </div>
-            <div class="mt-0.5 text-[11px] text-slate-400">
-                {{ $latestBackup ? ($latestBackup->isFullBackup() ? 'Full System (WIB)' : 'Config Only (WIB)') : 'Create your first backup now' }}
+            <div class="mt-1 text-[11px] text-slate-400">
+                @if($settings->auto_backup_last_run_at)
+                    Last run: {{ $settings->auto_backup_last_run_at->timezone('Asia/Jakarta')->format('d M Y H:i') }} WIB
+                @else
+                    Never run yet
+                @endif
             </div>
         </div>
+    </div>
+
+    {{-- Automated Scheduled Backup & Telegram Delivery --}}
+    <div class="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+        <div class="px-6 py-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 bg-slate-50/70">
+            <div>
+                <div class="flex flex-wrap items-center gap-2">
+                    <h3 class="text-base font-bold text-slate-900">Automated Backup Schedule &amp; Telegram Delivery</h3>
+                    @if($settings->auto_backup_last_status === 'success')
+                        <span class="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">Last Run OK</span>
+                    @elseif($settings->auto_backup_last_status === 'partial_telegram_failed')
+                        <span class="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-200">Saved Locally · Telegram Failed</span>
+                    @elseif($settings->auto_backup_last_status === 'failed')
+                        <span class="inline-flex items-center rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 ring-1 ring-rose-200">Last Run Failed</span>
+                    @endif
+                </div>
+                <p class="text-xs text-slate-500 mt-0.5">
+                    Configure scheduled encrypted backups (Database + App Configuration), encryption password, local retention, and automatic delivery to Telegram Bot.
+                </p>
+            </div>
+            <form method="POST" action="{{ route('admin.system-backups.run-now') }}"
+                  onsubmit="return confirm('Run an encrypted auto-backup now using your saved schedule settings?')">
+                @csrf
+                <button type="submit"
+                        @disabled(!$hasAutoBackupPassphrase)
+                        class="inline-flex items-center gap-1.5 rounded-xl border border-indigo-300 bg-indigo-50 px-3.5 py-2 text-xs font-semibold text-indigo-700 hover:bg-indigo-100 transition disabled:opacity-50 disabled:cursor-not-allowed">
+                    <svg class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                        <path stroke-linecap="round" stroke-linejoin="round" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                    </svg>
+                    Run Auto Backup Now
+                </button>
+            </form>
+        </div>
+
+        <form method="POST" action="{{ route('admin.system-backups.schedule.update') }}" class="p-6 space-y-5">
+            @csrf
+            @method('PUT')
+            <input type="hidden" name="form_context" value="auto_backup_schedule">
+
+            @if($settings->auto_backup_last_error)
+                <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
+                    <strong>Last Auto-Backup Notice:</strong> {{ $settings->auto_backup_last_error }}
+                </div>
+            @endif
+
+            @if($isScheduleError)
+                <div class="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-xs text-rose-700 space-y-1">
+                    <div class="font-bold text-rose-800">Could not save auto-backup settings:</div>
+                    @foreach($errors->all() as $error)
+                        <p>&bull; {{ $error }}</p>
+                    @endforeach
+                </div>
+            @endif
+
+            {{-- Enable Toggle + Scope --}}
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                <label class="flex items-start gap-3 rounded-xl border border-slate-200 bg-slate-50/60 p-4 cursor-pointer">
+                    <input type="checkbox"
+                           name="auto_backup_enabled"
+                           value="1"
+                           x-model="autoEnabled"
+                           class="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+                    <div class="text-xs">
+                        <div class="font-bold text-slate-900">Enable Automated Scheduled Backup</div>
+                        <p class="text-slate-500 mt-0.5">Runs automatically via Laravel Scheduler (WIB) with overlap protection and automatic pruning of expired auto-backups.</p>
+                    </div>
+                </label>
+
+                <div class="rounded-xl border border-slate-200 p-4 space-y-2">
+                    <label for="auto_backup_scope" class="block text-xs font-semibold text-slate-700">Backup Scope</label>
+                    <select id="auto_backup_scope" name="auto_backup_scope" class="w-full rounded-xl border-slate-300 text-sm">
+                        <option value="full" @selected($initialAutoScope === 'full')>Full Database + App Configuration (Recommended)</option>
+                        <option value="config_only" @selected($initialAutoScope === 'config_only')>App Configuration Only (Settings &amp; WA Templates)</option>
+                    </select>
+                </div>
+            </div>
+
+            {{-- Schedule & Retention Controls --}}
+            <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                <div>
+                    <label for="auto_backup_schedule" class="block text-xs font-semibold text-slate-700 mb-1">Schedule Frequency</label>
+                    <select id="auto_backup_schedule" name="auto_backup_schedule" x-model="autoSchedule" class="w-full rounded-xl border-slate-300 text-sm">
+                        @foreach($scheduleOptions as $val => $label)
+                            <option value="{{ $val }}" @selected($initialAutoSchedule === $val)>{{ $label }}</option>
+                        @endforeach
+                    </select>
+                </div>
+
+                <div x-show="['daily', 'weekly', 'monthly'].includes(autoSchedule)">
+                    <label for="auto_backup_time" class="block text-xs font-semibold text-slate-700 mb-1">Run Time (WIB, 24h)</label>
+                    <input type="time"
+                           id="auto_backup_time"
+                           name="auto_backup_time"
+                           value="{{ $initialAutoTime }}"
+                           required
+                           class="w-full rounded-xl border-slate-300 text-sm font-mono">
+                </div>
+
+                <div x-show="autoSchedule === 'weekly'" style="display: none;">
+                    <label for="auto_backup_day_of_week" class="block text-xs font-semibold text-slate-700 mb-1">Day of Week</label>
+                    <select id="auto_backup_day_of_week" name="auto_backup_day_of_week" class="w-full rounded-xl border-slate-300 text-sm">
+                        @foreach($weekDays as $dayNum => $dayName)
+                            <option value="{{ $dayNum }}" @selected($initialAutoDayOfWeek === $dayNum)>{{ $dayName }}</option>
+                        @endforeach
+                    </select>
+                </div>
+
+                <div x-show="autoSchedule === 'monthly'" style="display: none;">
+                    <label for="auto_backup_day_of_month" class="block text-xs font-semibold text-slate-700 mb-1">Day of Month (1–28)</label>
+                    <input type="number"
+                           id="auto_backup_day_of_month"
+                           name="auto_backup_day_of_month"
+                           value="{{ $initialAutoDayOfMonth }}"
+                           min="1"
+                           max="28"
+                           class="w-full rounded-xl border-slate-300 text-sm font-mono">
+                </div>
+
+                <div>
+                    <label for="auto_backup_retention_count" class="block text-xs font-semibold text-slate-700 mb-1">Local Retention (Auto Backups)</label>
+                    <input type="number"
+                           id="auto_backup_retention_count"
+                           name="auto_backup_retention_count"
+                           value="{{ $initialAutoRetention }}"
+                           min="1"
+                           max="90"
+                           required
+                           class="w-full rounded-xl border-slate-300 text-sm font-mono">
+                    <p class="mt-1 text-[11px] text-slate-400">Keeps latest N auto-backups on disk; manual backups are never pruned.</p>
+                </div>
+            </div>
+
+            {{-- Encryption Passphrase & Telegram Delivery --}}
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-4 pt-2 border-t border-slate-100">
+                {{-- Auto Backup Encryption Passphrase --}}
+                <div class="rounded-xl border border-slate-200 p-4 space-y-3">
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="text-xs font-bold text-slate-900">Auto-Backup Encryption Password</div>
+                        @if($hasAutoBackupPassphrase)
+                            <span class="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                                Configured (Encrypted at Rest)
+                            </span>
+                        @else
+                            <span class="inline-flex items-center rounded-full bg-amber-50 px-2 py-0.5 text-[10px] font-semibold text-amber-800 ring-1 ring-amber-200">
+                                Not Set Yet
+                            </span>
+                        @endif
+                    </div>
+
+                    <div class="flex items-center justify-between gap-2">
+                        <label for="auto_backup_passphrase" class="block text-xs font-medium text-slate-600">
+                            {{ $hasAutoBackupPassphrase ? 'New Passphrase (leave blank to keep current)' : 'Set Passphrase (min. 12 chars) *' }}
+                        </label>
+                        <div class="flex items-center gap-2">
+                            <button type="button" @click="generateAutoPassphrase()" class="text-[11px] font-semibold text-indigo-600 hover:text-indigo-800">
+                                Generate Strong Key
+                            </button>
+                            <button type="button" x-show="autoPassphrase.length > 0" @click="copyAutoPassphrase()" class="text-[11px] font-semibold text-emerald-600 hover:text-emerald-800" style="display: none;">
+                                <span x-text="autoPassphraseCopied ? 'Copied!' : 'Copy'"></span>
+                            </button>
+                        </div>
+                    </div>
+
+                    <div class="relative">
+                        <input :type="showAutoPassphrase ? 'text' : 'password'"
+                               id="auto_backup_passphrase"
+                               name="auto_backup_passphrase"
+                               x-model="autoPassphrase"
+                               minlength="12"
+                               maxlength="128"
+                               autocomplete="new-password"
+                               placeholder="{{ $hasAutoBackupPassphrase ? '•••••••••••• (unchanged)' : 'Enter strong backup passphrase...' }}"
+                               class="w-full rounded-xl border-slate-300 pr-16 text-sm font-mono">
+                        <button type="button" @click="showAutoPassphrase = !showAutoPassphrase"
+                                class="absolute inset-y-0 right-0 px-3 text-xs font-semibold text-slate-500 hover:text-slate-800"
+                                x-text="showAutoPassphrase ? 'Hide' : 'Show'"></button>
+                    </div>
+
+                    <input :type="showAutoPassphrase ? 'text' : 'password'"
+                           id="auto_backup_passphrase_confirmation"
+                           name="auto_backup_passphrase_confirmation"
+                           x-model="autoPassphraseConfirm"
+                           minlength="12"
+                           maxlength="128"
+                           autocomplete="new-password"
+                           placeholder="Confirm new passphrase"
+                           class="w-full rounded-xl border-slate-300 text-sm font-mono">
+
+                    <p class="text-[11px] text-slate-500">
+                        Stored encrypted with <code class="font-mono">APP_KEY</code> in the database and <strong>never</strong> shown again or sent to Telegram. Save a copy in your password manager to restore archives on another server.
+                    </p>
+                </div>
+
+                {{-- Telegram Bot Delivery --}}
+                <div class="rounded-xl border border-slate-200 p-4 space-y-3">
+                    <div class="flex items-center justify-between gap-2">
+                        <div class="text-xs font-bold text-slate-900">Telegram Bot Delivery</div>
+                        @if($telegramBotConfigured)
+                            <span class="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200">
+                                Bot Token Ready
+                            </span>
+                        @else
+                            <a href="{{ route('admin.settings.payment.edit') }}"
+                               class="inline-flex items-center rounded-full bg-rose-50 px-2 py-0.5 text-[10px] font-semibold text-rose-700 ring-1 ring-rose-200 hover:bg-rose-100">
+                                Configure Bot Token &rarr;
+                            </a>
+                        @endif
+                    </div>
+
+                    <label class="flex items-start gap-2.5 text-xs cursor-pointer">
+                        <input type="checkbox"
+                               name="auto_backup_send_telegram"
+                               value="1"
+                               x-model="autoSendTelegram"
+                               class="mt-0.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500">
+                        <span class="text-slate-700">
+                            <strong>Send encrypted <code class="font-mono">.iqb</code> file to Telegram Bot</strong> after each auto-backup (up to 49 MB Telegram limit).
+                        </span>
+                    </label>
+
+                    <div>
+                        <label for="auto_backup_telegram_chat_id" class="block text-xs font-medium text-slate-600 mb-1">
+                            Dedicated Backup Telegram Chat ID <span class="text-slate-400">(optional, recommended: Super Admin private chat)</span>
+                        </label>
+                        <input type="text"
+                               id="auto_backup_telegram_chat_id"
+                               name="auto_backup_telegram_chat_id"
+                               value="{{ $initialAutoTelegramChatId }}"
+                               placeholder="{{ $settings->telegram_chat_id ? 'Blank = default (' . $settings->telegram_chat_id . ')' : 'e.g. 123456789 or -1001234567890' }}"
+                               class="w-full rounded-xl border-slate-300 text-sm font-mono">
+                        <p class="mt-1 text-[11px] text-slate-500">
+                            Isolates database backups from shared payment notification groups. Leave blank to use the default Chat ID from
+                            <a href="{{ route('admin.settings.payment.edit') }}" class="font-semibold text-indigo-600 hover:underline">Settings</a>.
+                        </p>
+                    </div>
+                </div>
+            </div>
+
+            {{-- Super Admin Re-auth & Save --}}
+            <div class="flex flex-col sm:flex-row sm:items-end justify-between gap-3 pt-4 border-t border-slate-100">
+                <div class="w-full sm:max-w-xs">
+                    <label for="schedule_current_password" class="block text-xs font-semibold text-slate-700 mb-1">
+                        Super Admin Password to Save *
+                    </label>
+                    <input type="password"
+                           id="schedule_current_password"
+                           name="current_password"
+                           required
+                           autocomplete="current-password"
+                           placeholder="Re-enter your login password"
+                           class="w-full rounded-xl border-slate-300 text-sm">
+                </div>
+                <button type="submit"
+                        class="inline-flex items-center justify-center rounded-xl bg-slate-900 px-5 py-2.5 text-xs font-semibold text-white hover:bg-slate-800 shadow-sm transition">
+                    Save Auto-Backup Schedule
+                </button>
+            </div>
+        </form>
     </div>
 
     {{-- Stored Backups Table --}}
@@ -167,7 +487,18 @@
                             @foreach($backups as $backup)
                                 <tr class="hover:bg-slate-50/70 transition">
                                     <td class="px-5 py-3.5">
-                                        <div class="font-mono text-xs font-semibold text-slate-900">{{ $backup->filename }}</div>
+                                        <div class="flex flex-wrap items-center gap-1.5">
+                                            <span class="font-mono text-xs font-semibold text-slate-900">{{ $backup->filename }}</span>
+                                            @if($backup->isScheduled())
+                                                <span class="inline-flex items-center rounded-full bg-violet-50 px-2 py-0.5 text-[10px] font-semibold text-violet-700 ring-1 ring-violet-200">Auto</span>
+                                            @endif
+                                            @if($backup->telegram_sent_at)
+                                                <span class="inline-flex items-center rounded-full bg-emerald-50 px-2 py-0.5 text-[10px] font-semibold text-emerald-700 ring-1 ring-emerald-200"
+                                                      title="Sent to Telegram at {{ $backup->telegram_sent_at->timezone('Asia/Jakarta')->format('d M Y H:i') }} WIB">
+                                                    Telegram Sent
+                                                </span>
+                                            @endif
+                                        </div>
                                         <div class="text-[11px] text-slate-500 font-mono mt-0.5">
                                             SHA-256: {{ substr($backup->checksum_sha256, 0, 16) }}&hellip;
                                         </div>
@@ -194,9 +525,17 @@
                                     </td>
                                     <td class="px-5 py-3.5 text-xs whitespace-nowrap">
                                         <div class="font-medium text-slate-800">{{ $backup->created_at?->timezone('Asia/Jakarta')->format('d M Y H:i') }}</div>
-                                        <div class="text-slate-500">{{ $backup->createdBy?->name ?? 'System' }}</div>
+                                        <div class="text-slate-500">{{ $backup->createdBy?->name ?? 'Scheduler' }}</div>
                                     </td>
                                     <td class="px-5 py-3.5 text-right whitespace-nowrap space-x-1.5">
+                                        @if($telegramBotConfigured && $resolvedBackupChatId)
+                                            <form method="POST" action="{{ route('admin.system-backups.send-telegram', $backup) }}" class="inline">
+                                                @csrf
+                                                <button type="submit" class="inline-flex items-center rounded-lg bg-sky-50 px-2.5 py-1 text-xs font-semibold text-sky-700 hover:bg-sky-100">
+                                                    Send Telegram
+                                                </button>
+                                            </form>
+                                        @endif
                                         <a href="{{ route('admin.system-backups.download', $backup) }}"
                                            class="inline-flex items-center rounded-lg bg-indigo-50 px-2.5 py-1 text-xs font-semibold text-indigo-700 hover:bg-indigo-100">
                                             Download
@@ -255,6 +594,9 @@
                                     \App\Services\Backup\SystemBackupService::AUDIT_ACTION_DOWNLOADED => ['Downloaded', 'bg-sky-50 text-sky-700 ring-sky-200'],
                                     \App\Services\Backup\SystemBackupService::AUDIT_ACTION_RESTORED => ['Restored', 'bg-amber-50 text-amber-800 ring-amber-200'],
                                     \App\Services\Backup\SystemBackupService::AUDIT_ACTION_DELETED => ['Deleted', 'bg-rose-50 text-rose-700 ring-rose-200'],
+                                    \App\Services\Backup\SystemBackupService::AUDIT_ACTION_SCHEDULE_UPDATED => ['Schedule Updated', 'bg-indigo-50 text-indigo-700 ring-indigo-200'],
+                                    \App\Services\Backup\SystemBackupService::AUDIT_ACTION_TELEGRAM_SENT => ['Sent to Telegram', 'bg-emerald-50 text-emerald-700 ring-emerald-200'],
+                                    \App\Services\Backup\SystemBackupService::AUDIT_ACTION_TELEGRAM_FAILED => ['Telegram Failed', 'bg-rose-50 text-rose-700 ring-rose-200'],
                                     default => [$log->action, 'bg-slate-100 text-slate-600 ring-slate-200'],
                                 };
                                 $vals = $log->new_values ?: ($log->old_values ?: []);
@@ -273,6 +615,17 @@
                                         Mode: <strong class="text-slate-800">{{ $vals['restore_mode'] ?? '-' }}</strong>
                                         &middot; Source: <span class="font-mono">{{ $vals['source'] ?? '-' }}</span>
                                         &middot; {{ $vals['tables_restored'] ?? 0 }} table(s), {{ $vals['records_restored'] ?? 0 }} record(s)
+                                    @elseif($log->action === \App\Services\Backup\SystemBackupService::AUDIT_ACTION_SCHEDULE_UPDATED)
+                                        <strong>{{ !empty($vals['auto_backup_enabled']) ? 'Enabled' : 'Disabled' }}</strong>
+                                        &middot; {{ $vals['auto_backup_scope'] ?? 'full' }}
+                                        &middot; {{ $vals['auto_backup_schedule'] ?? 'daily' }} ({{ $vals['auto_backup_time'] ?? '02:00' }} WIB)
+                                        &middot; Telegram: {{ !empty($vals['auto_backup_send_telegram']) ? 'ON' : 'OFF' }}
+                                        @if(!empty($vals['passphrase_changed']))
+                                            &middot; <span class="font-semibold text-indigo-700">Passphrase Rotated</span>
+                                        @endif
+                                    @elseif($log->action === \App\Services\Backup\SystemBackupService::AUDIT_ACTION_TELEGRAM_FAILED)
+                                        <span class="font-mono font-semibold text-slate-700">{{ $vals['filename'] ?? '-' }}</span>
+                                        &middot; <span class="text-rose-700">{{ $vals['error'] ?? 'Delivery failed' }}</span>
                                     @else
                                         <span class="font-mono font-semibold text-slate-700">{{ $vals['filename'] ?? '-' }}</span>
                                         @if(!empty($vals['scope']))
@@ -284,7 +637,7 @@
                                     @endif
                                 </td>
                                 <td class="px-6 py-3 whitespace-nowrap text-slate-700">
-                                    <div class="font-medium">{{ $log->user?->name ?? ($vals['actor_email'] ?? 'System') }}</div>
+                                    <div class="font-medium">{{ $log->user?->name ?? ($vals['actor_email'] ?? 'Scheduler') }}</div>
                                     <div class="font-mono text-[11px] text-slate-400">{{ $log->ip_address ?? '-' }}</div>
                                 </td>
                             </tr>

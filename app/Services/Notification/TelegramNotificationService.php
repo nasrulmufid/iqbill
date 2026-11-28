@@ -164,6 +164,68 @@ class TelegramNotificationService
         $this->sendMessage($text);
     }
 
+    public const MAX_DOCUMENT_BYTES = 51_380_224; // 49 MB safety margin under Telegram Bot API 50 MB limit
+
+    /**
+     * Send an encrypted document attachment (e.g. .iqb system backup) to Telegram Bot.
+     * Never exposes bot token in error messages or logs.
+     *
+     * @return array{ok: bool, message: string}
+     */
+    public function sendDocument(
+        string $filename,
+        string $rawBytes,
+        string $htmlCaption,
+        ?string $chatIdOverride = null
+    ): array {
+        $settings = CompanySetting::current();
+        $botToken = trim((string) ($settings->telegram_bot_token_encrypted ?? ''));
+        $chatId = trim((string) ($chatIdOverride ?? $settings->telegram_chat_id ?? ''));
+
+        if ($botToken === '' || $chatId === '') {
+            return ['ok' => false, 'message' => 'Telegram Bot token or destination Chat ID is not configured.'];
+        }
+
+        if (strlen($rawBytes) === 0) {
+            return ['ok' => false, 'message' => 'Cannot send an empty document to Telegram.'];
+        }
+
+        if (strlen($rawBytes) > self::MAX_DOCUMENT_BYTES) {
+            return ['ok' => false, 'message' => 'Backup archive exceeds Telegram Bot API 50 MB upload limit. Download it directly from the server.'];
+        }
+
+        $safeFilename = preg_replace('/[^a-zA-Z0-9._-]/', '_', basename($filename)) ?: 'iqbill-backup.iqb';
+        $safeCaption = mb_substr($htmlCaption, 0, 1024);
+
+        try {
+            $url = "https://api.telegram.org/bot{$botToken}/sendDocument";
+            $response = Http::timeout(45)
+                ->attach('document', $rawBytes, $safeFilename)
+                ->post($url, [
+                    'chat_id' => $chatId,
+                    'caption' => $safeCaption,
+                    'parse_mode' => 'HTML',
+                ]);
+
+            if (!$response->successful()) {
+                \Illuminate\Support\Facades\Log::warning('Telegram sendDocument failed', [
+                    'status' => $response->status(),
+                    'body' => mb_substr($this->redactBotToken($response->body()), 0, 500),
+                ]);
+
+                return ['ok' => false, 'message' => 'Telegram API returned HTTP ' . $response->status() . ' while uploading backup.'];
+            }
+
+            return ['ok' => true, 'message' => 'Encrypted backup archive delivered to Telegram.'];
+        } catch (Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Telegram sendDocument exception', [
+                'error' => $this->redactBotToken($e->getMessage()),
+            ]);
+
+            return ['ok' => false, 'message' => 'Failed to reach Telegram API while uploading backup.'];
+        }
+    }
+
     private function redactBotToken(string $message): string
     {
         return (string) preg_replace('#/bot[^/\s]+#i', '/bot[REDACTED]', $message);

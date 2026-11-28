@@ -6,8 +6,11 @@ namespace App\Services\Backup;
 
 use App\Enums\UserRole;
 use App\Models\AuditLog;
+use App\Models\CompanySetting;
 use App\Models\SystemBackup;
 use App\Models\User;
+use App\Services\Notification\TelegramNotificationService;
+use Carbon\CarbonImmutable;
 use Illuminate\Contracts\Encryption\DecryptException;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Crypt;
@@ -16,6 +19,7 @@ use Illuminate\Support\Facades\Schema;
 use Illuminate\Support\Facades\Storage;
 use Illuminate\Support\Str;
 use RuntimeException;
+use Throwable;
 
 class SystemBackupService
 {
@@ -44,6 +48,25 @@ class SystemBackupService
     public const AUDIT_ACTION_RESTORED = 'system_backup.restored';
 
     public const AUDIT_ACTION_DELETED = 'system_backup.deleted';
+
+    public const AUDIT_ACTION_SCHEDULE_UPDATED = 'system_backup.schedule_updated';
+
+    public const AUDIT_ACTION_TELEGRAM_SENT = 'system_backup.telegram_sent';
+
+    public const AUDIT_ACTION_TELEGRAM_FAILED = 'system_backup.telegram_failed';
+
+    /**
+     * Supported automated backup schedule presets.
+     *
+     * @var list<string>
+     */
+    public const SCHEDULES = [
+        'daily',
+        'weekly',
+        'monthly',
+        'every_6_hours',
+        'every_12_hours',
+    ];
 
     /**
      * Application configuration tables (settings & WhatsApp templates).
@@ -98,6 +121,7 @@ class SystemBackupService
             'wa_basic_auth_password_encrypted',
             'telegram_bot_token_encrypted',
             'google_maps_api_key_encrypted',
+            'auto_backup_passphrase_encrypted',
         ],
         'mikrotik_routers' => [
             'password_encrypted',
@@ -112,10 +136,15 @@ class SystemBackupService
         string $passphrase,
         ?User $actor,
         ?string $ipAddress = null,
-        ?string $notes = null
+        ?string $notes = null,
+        string $triggerSource = 'manual'
     ): SystemBackup {
         if (! in_array($scope, ['full', 'config_only'], true)) {
             throw new RuntimeException("Invalid backup scope '{$scope}'.");
+        }
+
+        if (! in_array($triggerSource, ['manual', 'scheduled'], true)) {
+            throw new RuntimeException("Invalid backup trigger source '{$triggerSource}'.");
         }
 
         $this->assertValidPassphrase($passphrase);
@@ -186,6 +215,7 @@ class SystemBackupService
 
         $backup = SystemBackup::query()->create([
             'scope' => $scope,
+            'trigger_source' => $triggerSource,
             'filename' => $filename,
             'file_path' => $relativePath,
             'file_size_bytes' => strlen($encryptedArchive),
@@ -206,6 +236,7 @@ class SystemBackupService
             'auditable_id' => $backup->id,
             'new_values' => [
                 'scope' => $scope,
+                'trigger_source' => $triggerSource,
                 'filename' => $filename,
                 'tables_count' => $backup->tables_count,
                 'records_count' => $backup->records_count,
@@ -218,6 +249,301 @@ class SystemBackupService
         ]);
 
         return $backup;
+    }
+
+    /**
+     * Evaluate whether the configured automated backup schedule is due at the given WIB timestamp.
+     * Prevents duplicate execution within the same schedule slot.
+     */
+    public function shouldRunScheduledBackup(CompanySetting $settings, ?CarbonImmutable $nowWib = null): bool
+    {
+        if (! $settings->auto_backup_enabled) {
+            return false;
+        }
+
+        $passphrase = (string) ($settings->auto_backup_passphrase_encrypted ?? '');
+        if (mb_strlen($passphrase) < self::MIN_PASSPHRASE_LENGTH) {
+            return false;
+        }
+
+        $now = ($nowWib ?? CarbonImmutable::now('Asia/Jakarta'))->setTimezone('Asia/Jakarta');
+        $lastRun = $settings->auto_backup_last_run_at
+            ? CarbonImmutable::instance($settings->auto_backup_last_run_at)->setTimezone('Asia/Jakarta')
+            : null;
+
+        $schedule = (string) ($settings->auto_backup_schedule ?: 'daily');
+        $targetTime = preg_match('/^([01]\d|2[0-3]):[0-5]\d$/', (string) $settings->auto_backup_time) === 1
+            ? (string) $settings->auto_backup_time
+            : '02:00';
+
+        return match ($schedule) {
+            'every_6_hours' => $now->minute === 0
+                && ($now->hour % 6 === 0)
+                && ($lastRun === null || $lastRun->format('Y-m-d H') !== $now->format('Y-m-d H')),
+
+            'every_12_hours' => $now->minute === 0
+                && ($now->hour % 12 === 0)
+                && ($lastRun === null || $lastRun->format('Y-m-d H') !== $now->format('Y-m-d H')),
+
+            'weekly' => (int) $now->dayOfWeek === (int) $settings->auto_backup_day_of_week
+                && $now->format('H:i') === $targetTime
+                && ($lastRun === null || $lastRun->toDateString() !== $now->toDateString()),
+
+            'monthly' => (int) $now->day === max(1, min(28, (int) $settings->auto_backup_day_of_month))
+                && $now->format('H:i') === $targetTime
+                && ($lastRun === null || $lastRun->format('Y-m') !== $now->format('Y-m')),
+
+            default => $now->format('H:i') === $targetTime
+                && ($lastRun === null || $lastRun->toDateString() !== $now->toDateString()),
+        };
+    }
+
+    /**
+     * Execute automated backup (encrypting with the configured passphrase), optionally deliver to Telegram,
+     * and prune expired scheduled local archives according to retention policy.
+     *
+     * @return array{
+     *     ran: bool,
+     *     reason: string,
+     *     backup: ?SystemBackup,
+     *     telegram_attempted: bool,
+     *     telegram_ok: bool,
+     *     telegram_message: ?string,
+     *     pruned_count: int
+     * }
+     */
+    public function runAutoBackup(
+        ?User $actor = null,
+        ?string $ipAddress = null,
+        bool $force = false,
+        ?CarbonImmutable $nowWib = null
+    ): array {
+        $lock = Cache::lock('system_auto_backup_lock', 600);
+        if (! $lock->get()) {
+            return [
+                'ran' => false,
+                'reason' => 'locked',
+                'backup' => null,
+                'telegram_attempted' => false,
+                'telegram_ok' => false,
+                'telegram_message' => 'Another auto-backup process is currently running.',
+                'pruned_count' => 0,
+            ];
+        }
+
+        try {
+            $settings = CompanySetting::current()->fresh();
+
+            if (! $force && ! $this->shouldRunScheduledBackup($settings, $nowWib)) {
+                return [
+                    'ran' => false,
+                    'reason' => 'not_due',
+                    'backup' => null,
+                    'telegram_attempted' => false,
+                    'telegram_ok' => false,
+                    'telegram_message' => null,
+                    'pruned_count' => 0,
+                ];
+            }
+
+            $passphrase = (string) ($settings->auto_backup_passphrase_encrypted ?? '');
+            if (mb_strlen($passphrase) < self::MIN_PASSPHRASE_LENGTH) {
+                $error = 'Auto-backup encryption passphrase is not configured (minimum 12 characters required).';
+                $settings->forceFill([
+                    'auto_backup_last_run_at' => now(),
+                    'auto_backup_last_status' => 'failed',
+                    'auto_backup_last_error' => $error,
+                ])->save();
+
+                throw new RuntimeException($error);
+            }
+
+            $scope = in_array($settings->auto_backup_scope, ['full', 'config_only'], true)
+                ? (string) $settings->auto_backup_scope
+                : 'full';
+
+            $scheduleLabel = str_replace('_', ' ', (string) ($settings->auto_backup_schedule ?: 'daily'));
+            $notes = $force
+                ? "Auto backup ({$scheduleLabel} · manual trigger)"
+                : "Scheduled auto backup ({$scheduleLabel})";
+
+            try {
+                $backup = $this->createBackup(
+                    scope: $scope,
+                    passphrase: $passphrase,
+                    actor: $actor,
+                    ipAddress: $ipAddress,
+                    notes: $notes,
+                    triggerSource: 'scheduled'
+                );
+            } catch (Throwable $e) {
+                $settings->forceFill([
+                    'auto_backup_last_run_at' => now(),
+                    'auto_backup_last_status' => 'failed',
+                    'auto_backup_last_error' => mb_substr($e->getMessage(), 0, 500),
+                ])->save();
+
+                throw $e;
+            }
+
+            $telegramAttempted = false;
+            $telegramOk = false;
+            $telegramMessage = null;
+
+            if ($settings->auto_backup_send_telegram) {
+                $telegramAttempted = true;
+                $tgResult = $this->sendBackupToTelegram($backup, $settings, $actor, $ipAddress);
+                $telegramOk = $tgResult['ok'];
+                $telegramMessage = $tgResult['message'];
+            }
+
+            $retention = max(1, min(90, (int) ($settings->auto_backup_retention_count ?: 7)));
+            $prunedCount = $this->pruneOldScheduledBackups($retention);
+
+            $status = (! $telegramAttempted || $telegramOk) ? 'success' : 'partial_telegram_failed';
+
+            $settings->forceFill([
+                'auto_backup_last_run_at' => now(),
+                'auto_backup_last_status' => $status,
+                'auto_backup_last_error' => $status === 'success' ? null : mb_substr((string) $telegramMessage, 0, 500),
+            ])->save();
+
+            return [
+                'ran' => true,
+                'reason' => 'completed',
+                'backup' => $backup->fresh(),
+                'telegram_attempted' => $telegramAttempted,
+                'telegram_ok' => $telegramOk,
+                'telegram_message' => $telegramMessage,
+                'pruned_count' => $prunedCount,
+            ];
+        } finally {
+            $lock->release();
+        }
+    }
+
+    /**
+     * Send an existing encrypted backup archive (.iqb) to the configured Telegram Bot.
+     * NEVER includes the encryption passphrase in the message caption.
+     *
+     * @return array{ok: bool, message: string}
+     */
+    public function sendBackupToTelegram(
+        SystemBackup $backup,
+        ?CompanySetting $settings = null,
+        ?User $actor = null,
+        ?string $ipAddress = null
+    ): array {
+        $settings = $settings ?? CompanySetting::current();
+        $chatId = $settings->resolvedAutoBackupTelegramChatId();
+
+        if (empty($settings->telegram_bot_token_encrypted) || $chatId === null) {
+            $message = 'Telegram Bot token or backup destination Chat ID is not configured.';
+
+            AuditLog::query()->create([
+                'user_id' => $actor?->id,
+                'action' => self::AUDIT_ACTION_TELEGRAM_FAILED,
+                'auditable_type' => SystemBackup::class,
+                'auditable_id' => $backup->id,
+                'new_values' => [
+                    'filename' => $backup->filename,
+                    'error' => $message,
+                ],
+                'ip_address' => $ipAddress,
+                'created_at' => now(),
+            ]);
+
+            return ['ok' => false, 'message' => $message];
+        }
+
+        $raw = $this->readAndVerifyStoredArchive($backup);
+        $scopeLabel = $backup->isFullBackup() ? 'Full Database + App Config' : 'App Configuration Only';
+        $sizeKb = number_format($backup->file_size_bytes / 1024, 1);
+        $companyName = e((string) ($settings->company_name ?: config('app.name', 'IQ Bill')));
+        $checksumShort = substr($backup->checksum_sha256, 0, 16);
+
+        $caption = implode("\n", [
+            "<b>[{$companyName}] Encrypted Auto Backup</b>",
+            'Scope: <b>'.e($scopeLabel).'</b>',
+            'File: <code>'.e($backup->filename).'</code>',
+            "Coverage: {$backup->tables_count} tables · ".number_format($backup->records_count)." records ({$sizeKb} KB)",
+            'SHA-256: <code>'.e($checksumShort).'...</code>',
+            'Time: '.now('Asia/Jakarta')->format('d M Y H:i').' WIB',
+            'Cipher: AES-256-GCM (passphrase never transmitted)',
+        ]);
+
+        $telegram = app(TelegramNotificationService::class);
+        $result = $telegram->sendDocument(
+            filename: $backup->filename,
+            rawBytes: $raw,
+            htmlCaption: $caption,
+            chatIdOverride: $chatId
+        );
+
+        if ($result['ok']) {
+            $backup->forceFill(['telegram_sent_at' => now()])->save();
+
+            AuditLog::query()->create([
+                'user_id' => $actor?->id,
+                'action' => self::AUDIT_ACTION_TELEGRAM_SENT,
+                'auditable_type' => SystemBackup::class,
+                'auditable_id' => $backup->id,
+                'new_values' => [
+                    'filename' => $backup->filename,
+                    'scope' => $backup->scope,
+                    'chat_id' => $chatId,
+                    'checksum_sha256' => $backup->checksum_sha256,
+                ],
+                'ip_address' => $ipAddress,
+                'created_at' => now(),
+            ]);
+        } else {
+            AuditLog::query()->create([
+                'user_id' => $actor?->id,
+                'action' => self::AUDIT_ACTION_TELEGRAM_FAILED,
+                'auditable_type' => SystemBackup::class,
+                'auditable_id' => $backup->id,
+                'new_values' => [
+                    'filename' => $backup->filename,
+                    'chat_id' => $chatId,
+                    'error' => mb_substr($result['message'], 0, 400),
+                ],
+                'ip_address' => $ipAddress,
+                'created_at' => now(),
+            ]);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Prune oldest scheduled backups beyond the configured retention count.
+     * Manual backups created by Super Admin are NEVER pruned automatically.
+     */
+    public function pruneOldScheduledBackups(int $keepCount): int
+    {
+        $keepCount = max(1, $keepCount);
+
+        $excess = SystemBackup::query()
+            ->where('trigger_source', 'scheduled')
+            ->orderByDesc('created_at')
+            ->orderByDesc('id')
+            ->skip($keepCount)
+            ->take(500)
+            ->get();
+
+        $pruned = 0;
+
+        foreach ($excess as $oldBackup) {
+            if ($oldBackup->hasValidStoragePath() && Storage::disk('local')->exists($oldBackup->file_path)) {
+                Storage::disk('local')->delete($oldBackup->file_path);
+            }
+
+            $oldBackup->delete();
+            $pruned++;
+        }
+
+        return $pruned;
     }
 
     public function readStoredBackupForDownload(
@@ -530,7 +856,7 @@ class SystemBackupService
 
         try {
             $envelope = json_decode($rawArchive, true, 16, JSON_THROW_ON_ERROR);
-        } catch (\Throwable) {
+        } catch (Throwable) {
             throw new RuntimeException('Invalid backup file format. Expected an encrypted IQ Bill (.iqb) archive.');
         }
 
@@ -604,7 +930,7 @@ class SystemBackupService
 
         try {
             $payload = json_decode($json, true, 64, JSON_THROW_ON_ERROR);
-        } catch (\Throwable) {
+        } catch (Throwable) {
             throw new RuntimeException('Backup payload JSON is corrupted.');
         }
 

@@ -45,3 +45,8 @@ Schedule::call(static function (): void {
     ->name('system:queue-heartbeat')
     ->everyFiveMinutes()
     ->timezone('Asia/Jakarta');
+
+Schedule::command('system:auto-backup')
+    ->everyMinute()
+    ->timezone('Asia/Jakarta')
+    ->withoutOverlapping();

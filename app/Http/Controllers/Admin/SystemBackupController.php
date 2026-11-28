@@ -6,6 +6,7 @@ namespace App\Http\Controllers\Admin;
 
 use App\Http\Controllers\Controller;
 use App\Models\AuditLog;
+use App\Models\CompanySetting;
 use App\Models\SystemBackup;
 use App\Models\User;
 use App\Services\Backup\SystemBackupService;
@@ -16,6 +17,7 @@ use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Hash;
 use Illuminate\Support\Facades\Schema;
+use Illuminate\Validation\Rule;
 use Illuminate\Validation\ValidationException;
 use Illuminate\View\View;
 use Throwable;
@@ -24,6 +26,8 @@ class SystemBackupController extends Controller
 {
     public function index(): View
     {
+        $settings = CompanySetting::current();
+
         $backups = SystemBackup::query()
             ->with('createdBy:id,name,email')
             ->latest('created_at')
@@ -36,9 +40,12 @@ class SystemBackupController extends Controller
                 SystemBackupService::AUDIT_ACTION_DOWNLOADED,
                 SystemBackupService::AUDIT_ACTION_RESTORED,
                 SystemBackupService::AUDIT_ACTION_DELETED,
+                SystemBackupService::AUDIT_ACTION_SCHEDULE_UPDATED,
+                SystemBackupService::AUDIT_ACTION_TELEGRAM_SENT,
+                SystemBackupService::AUDIT_ACTION_TELEGRAM_FAILED,
             ])
             ->latest('created_at')
-            ->limit(15)
+            ->limit(20)
             ->get();
 
         $activeTableCount = 0;
@@ -52,6 +59,10 @@ class SystemBackupController extends Controller
         }
 
         return view('admin.backups.index', [
+            'settings' => $settings,
+            'hasAutoBackupPassphrase' => mb_strlen((string) ($settings->auto_backup_passphrase_encrypted ?? '')) >= SystemBackupService::MIN_PASSPHRASE_LENGTH,
+            'telegramBotConfigured' => ! empty($settings->telegram_bot_token_encrypted),
+            'resolvedBackupChatId' => $settings->resolvedAutoBackupTelegramChatId(),
             'backups' => $backups,
             'auditLogs' => $auditLogs,
             'totalBackups' => SystemBackup::query()->count(),
@@ -186,6 +197,182 @@ class SystemBackupController extends Controller
         }
 
         return $this->finishRestoreResponse($request, $result);
+    }
+
+    public function updateSchedule(Request $request): RedirectResponse
+    {
+        $safeInput = $request->except([
+            'auto_backup_passphrase',
+            'auto_backup_passphrase_confirmation',
+            'current_password',
+        ]);
+
+        $settings = CompanySetting::current();
+        $hasExistingPassphrase = mb_strlen((string) ($settings->auto_backup_passphrase_encrypted ?? '')) >= SystemBackupService::MIN_PASSPHRASE_LENGTH;
+
+        try {
+            $data = $request->validate([
+                'auto_backup_enabled' => ['nullable', 'boolean'],
+                'auto_backup_scope' => ['required', 'in:full,config_only'],
+                'auto_backup_schedule' => ['required', Rule::in(SystemBackupService::SCHEDULES)],
+                'auto_backup_time' => ['required', 'regex:/^([01]\d|2[0-3]):[0-5]\d$/'],
+                'auto_backup_day_of_week' => ['required', 'integer', 'min:0', 'max:6'],
+                'auto_backup_day_of_month' => ['required', 'integer', 'min:1', 'max:28'],
+                'auto_backup_retention_count' => ['required', 'integer', 'min:1', 'max:90'],
+                'auto_backup_passphrase' => ['nullable', 'string', 'min:12', 'max:128', 'confirmed'],
+                'auto_backup_send_telegram' => ['nullable', 'boolean'],
+                'auto_backup_telegram_chat_id' => ['nullable', 'string', 'max:60', 'regex:/^-?[0-9]+$/'],
+                'current_password' => ['required', 'string'],
+            ], [
+                'auto_backup_time.regex' => 'Backup time must be in 24-hour HH:MM format (e.g. 02:00).',
+                'auto_backup_passphrase.min' => 'Auto-backup encryption passphrase must be at least 12 characters.',
+                'auto_backup_passphrase.confirmed' => 'Auto-backup encryption passphrase confirmation does not match.',
+                'auto_backup_telegram_chat_id.regex' => 'Telegram Chat ID must be a numeric ID (e.g. 123456789 or -1001234567890).',
+            ]);
+
+            $actor = $request->user();
+            if ($actor === null || ! Hash::check((string) $data['current_password'], (string) $actor->password)) {
+                throw ValidationException::withMessages([
+                    'current_password' => 'Your current Super Admin password is incorrect.',
+                ]);
+            }
+
+            $enabled = $request->boolean('auto_backup_enabled');
+            $sendTelegram = $request->boolean('auto_backup_send_telegram');
+            $newPassphrase = trim((string) ($data['auto_backup_passphrase'] ?? ''));
+
+            if ($enabled && ! $hasExistingPassphrase && $newPassphrase === '') {
+                throw ValidationException::withMessages([
+                    'auto_backup_passphrase' => 'Please set an encryption passphrase (min. 12 characters) before enabling Auto Backup.',
+                ]);
+            }
+
+            $dedicatedChatId = trim((string) ($data['auto_backup_telegram_chat_id'] ?? ''));
+            $effectiveChatId = $dedicatedChatId !== '' ? $dedicatedChatId : trim((string) ($settings->telegram_chat_id ?? ''));
+
+            if ($enabled && $sendTelegram) {
+                if (empty($settings->telegram_bot_token_encrypted)) {
+                    throw ValidationException::withMessages([
+                        'auto_backup_send_telegram' => 'Telegram Bot Token is not configured yet. Configure it in Settings first or disable Telegram delivery.',
+                    ]);
+                }
+
+                if ($effectiveChatId === '') {
+                    throw ValidationException::withMessages([
+                        'auto_backup_telegram_chat_id' => 'Provide a Backup Telegram Chat ID (or set a default Telegram Chat ID in Settings).',
+                    ]);
+                }
+            }
+        } catch (ValidationException $e) {
+            return back()->withErrors($e->errors())->withInput($safeInput);
+        }
+
+        $oldValues = [
+            'auto_backup_enabled' => (bool) $settings->auto_backup_enabled,
+            'auto_backup_scope' => $settings->auto_backup_scope,
+            'auto_backup_schedule' => $settings->auto_backup_schedule,
+            'auto_backup_time' => $settings->auto_backup_time,
+            'auto_backup_day_of_week' => (int) $settings->auto_backup_day_of_week,
+            'auto_backup_day_of_month' => (int) $settings->auto_backup_day_of_month,
+            'auto_backup_retention_count' => (int) $settings->auto_backup_retention_count,
+            'auto_backup_send_telegram' => (bool) $settings->auto_backup_send_telegram,
+            'auto_backup_telegram_chat_id' => $settings->auto_backup_telegram_chat_id,
+        ];
+
+        $updates = [
+            'auto_backup_enabled' => $enabled,
+            'auto_backup_scope' => $data['auto_backup_scope'],
+            'auto_backup_schedule' => $data['auto_backup_schedule'],
+            'auto_backup_time' => $data['auto_backup_time'],
+            'auto_backup_day_of_week' => (int) $data['auto_backup_day_of_week'],
+            'auto_backup_day_of_month' => (int) $data['auto_backup_day_of_month'],
+            'auto_backup_retention_count' => (int) $data['auto_backup_retention_count'],
+            'auto_backup_send_telegram' => $sendTelegram,
+            'auto_backup_telegram_chat_id' => $dedicatedChatId !== '' ? $dedicatedChatId : null,
+        ];
+
+        $passphraseChanged = $newPassphrase !== '';
+        if ($passphraseChanged) {
+            $updates['auto_backup_passphrase_encrypted'] = $newPassphrase;
+        }
+
+        $settings->update($updates);
+
+        AuditLog::query()->create([
+            'user_id' => $request->user()?->id,
+            'action' => SystemBackupService::AUDIT_ACTION_SCHEDULE_UPDATED,
+            'auditable_type' => CompanySetting::class,
+            'auditable_id' => $settings->id,
+            'old_values' => $oldValues,
+            'new_values' => array_diff_key($updates, ['auto_backup_passphrase_encrypted' => true]) + [
+                'passphrase_changed' => $passphraseChanged,
+            ],
+            'ip_address' => $request->ip(),
+            'created_at' => now(),
+        ]);
+
+        $statusLabel = $enabled ? 'ENABLED' : 'DISABLED';
+        $note = $passphraseChanged ? ' Encryption passphrase rotated securely.' : '';
+
+        return back()->with('success', "Auto-backup schedule saved ({$statusLabel} · {$data['auto_backup_schedule']} at {$data['auto_backup_time']} WIB).{$note}");
+    }
+
+    public function runAutoNow(
+        Request $request,
+        SystemBackupService $backupService
+    ): RedirectResponse {
+        try {
+            $result = $backupService->runAutoBackup(
+                actor: $request->user(),
+                ipAddress: $request->ip(),
+                force: true
+            );
+        } catch (Throwable $e) {
+            return back()->with('error', 'Auto backup failed: '.$e->getMessage());
+        }
+
+        if (! $result['ran']) {
+            return back()->with('error', $result['telegram_message'] ?: 'Auto backup could not start right now.');
+        }
+
+        $backup = $result['backup'];
+        $msg = "Auto backup created ({$backup->filename} · {$backup->tables_count} table(s), {$backup->records_count} record(s)).";
+
+        if ($result['telegram_attempted']) {
+            if ($result['telegram_ok']) {
+                $msg .= ' Encrypted archive delivered to Telegram Bot.';
+            } else {
+                return back()->with('error', "{$msg} However, Telegram delivery failed: {$result['telegram_message']}");
+            }
+        }
+
+        if ($result['pruned_count'] > 0) {
+            $msg .= " Pruned {$result['pruned_count']} expired auto-backup file(s).";
+        }
+
+        return back()->with('success', $msg);
+    }
+
+    public function sendToTelegram(
+        Request $request,
+        SystemBackup $backup,
+        SystemBackupService $backupService
+    ): RedirectResponse {
+        try {
+            $result = $backupService->sendBackupToTelegram(
+                backup: $backup,
+                actor: $request->user(),
+                ipAddress: $request->ip()
+            );
+        } catch (Throwable $e) {
+            return back()->with('error', 'Failed to send backup to Telegram: '.$e->getMessage());
+        }
+
+        if (! $result['ok']) {
+            return back()->with('error', $result['message']);
+        }
+
+        return back()->with('success', "Encrypted archive {$backup->filename} sent to Telegram Bot (passphrase not included).");
     }
 
     public function destroy(

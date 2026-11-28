@@ -15,6 +15,7 @@ class SystemBackup extends Model
 
     protected $fillable = [
         'scope',
+        'trigger_source',
         'filename',
         'file_path',
         'file_size_bytes',
@@ -24,6 +25,7 @@ class SystemBackup extends Model
         'records_count',
         'app_version',
         'notes',
+        'telegram_sent_at',
         'created_by_user_id',
         'created_at',
     ];
@@ -34,8 +36,14 @@ class SystemBackup extends Model
             'file_size_bytes' => 'integer',
             'tables_count' => 'integer',
             'records_count' => 'integer',
+            'telegram_sent_at' => 'datetime',
             'created_at' => 'datetime',
         ];
+    }
+
+    public function isScheduled(): bool
+    {
+        return $this->trigger_source === 'scheduled';
     }
 
     public function createdBy(): BelongsTo

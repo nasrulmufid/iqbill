@@ -41,6 +41,19 @@ class CompanySetting extends Model
         'telegram_notify_payment',
         'telegram_notify_error',
         'google_maps_api_key_encrypted',
+        'auto_backup_enabled',
+        'auto_backup_scope',
+        'auto_backup_schedule',
+        'auto_backup_time',
+        'auto_backup_day_of_week',
+        'auto_backup_day_of_month',
+        'auto_backup_retention_count',
+        'auto_backup_passphrase_encrypted',
+        'auto_backup_send_telegram',
+        'auto_backup_telegram_chat_id',
+        'auto_backup_last_run_at',
+        'auto_backup_last_status',
+        'auto_backup_last_error',
     ];
 
     protected $hidden = [
@@ -51,6 +64,7 @@ class CompanySetting extends Model
         'wa_basic_auth_password_encrypted',
         'telegram_bot_token_encrypted',
         'google_maps_api_key_encrypted',
+        'auto_backup_passphrase_encrypted',
     ];
 
     protected function casts(): array
@@ -70,7 +84,32 @@ class CompanySetting extends Model
             'telegram_notify_payment' => 'boolean',
             'telegram_notify_error' => 'boolean',
             'google_maps_api_key_encrypted' => 'encrypted',
+            'auto_backup_enabled' => 'boolean',
+            'auto_backup_day_of_week' => 'integer',
+            'auto_backup_day_of_month' => 'integer',
+            'auto_backup_retention_count' => 'integer',
+            'auto_backup_passphrase_encrypted' => 'encrypted',
+            'auto_backup_send_telegram' => 'boolean',
+            'auto_backup_last_run_at' => 'datetime',
         ];
+    }
+
+    public function resolvedAutoBackupTelegramChatId(): ?string
+    {
+        $dedicated = trim((string) ($this->auto_backup_telegram_chat_id ?? ''));
+        if ($dedicated !== '') {
+            return $dedicated;
+        }
+
+        $fallback = trim((string) ($this->telegram_chat_id ?? ''));
+
+        return $fallback !== '' ? $fallback : null;
+    }
+
+    public function hasAutoBackupTelegramReady(): bool
+    {
+        return !empty($this->telegram_bot_token_encrypted)
+            && $this->resolvedAutoBackupTelegramChatId() !== null;
     }
 
     public static function current(): self
@@ -87,6 +126,14 @@ class CompanySetting extends Model
             'sumopod_live_base_url' => self::DEFAULT_SUMOPOD_LIVE_BASE_URL,
             'sumopod_webhook_verification_mode' => 'auto',
             'sumopod_fee_bearer' => 'merchant',
+            'auto_backup_enabled' => false,
+            'auto_backup_scope' => 'full',
+            'auto_backup_schedule' => 'daily',
+            'auto_backup_time' => '02:00',
+            'auto_backup_day_of_week' => 0,
+            'auto_backup_day_of_month' => 1,
+            'auto_backup_retention_count' => 7,
+            'auto_backup_send_telegram' => true,
         ];
 
         $gowaUrl = trim((string) config('services.gowa.url', ''));
